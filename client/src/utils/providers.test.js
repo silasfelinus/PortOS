@@ -7,7 +7,9 @@ import {
   filterGenerationModels,
   isEmbeddingModel,
   isVisionModel,
+  visionLocalModelFilter,
   localBackendForProvider,
+  effectiveModelContextWindow,
   mergeModelLists,
   modelOptionLabel,
   isTuiProvider,
@@ -235,6 +237,36 @@ describe('localBackendForProvider', () => {
   });
 });
 
+describe('effectiveModelContextWindow', () => {
+  it('matches known model windows before provider defaults', () => {
+    expect(effectiveModelContextWindow({ type: 'tui' }, 'gpt-5.5')).toBe(1_000_000);
+    expect(effectiveModelContextWindow({ type: 'tui' }, 'gpt-5.4')).toBe(1_000_000);
+    expect(effectiveModelContextWindow({ type: 'tui' }, 'gpt-5.4-mini')).toBe(400_000);
+    expect(effectiveModelContextWindow({ type: 'tui' }, 'gpt-5.4-nano')).toBe(128_000);
+    expect(effectiveModelContextWindow({ type: 'tui' }, 'claude-opus-4-8')).toBe(1_000_000);
+    expect(effectiveModelContextWindow({ type: 'api', endpoint: 'https://api.example.test/v1' }, 'claude-sonnet-4-6')).toBe(1_000_000);
+    expect(effectiveModelContextWindow({ type: 'api', endpoint: 'https://api.example.test/v1' }, 'us.anthropic.claude-sonnet-4-5-20250929-v1:0')).toBe(200_000);
+    expect(effectiveModelContextWindow({ type: 'api', endpoint: 'https://api.example.test/v1' }, 'claude-haiku-4-5')).toBe(200_000);
+    expect(effectiveModelContextWindow({ type: 'api', endpoint: 'https://generativelanguage.googleapis.com/v1beta' }, 'gemini-2.5-pro')).toBe(1_048_576);
+  });
+
+  it('uses canonical provider windows for configured-default process providers', () => {
+    expect(effectiveModelContextWindow({ id: 'codex-tui', type: 'tui', command: 'codex' }, CODEX_CONFIGURED_DEFAULT)).toBe(1_000_000);
+    expect(effectiveModelContextWindow({ id: 'antigravity-cli', type: 'cli', command: 'agy' }, ANTIGRAVITY_CONFIGURED_DEFAULT)).toBe(1_048_576);
+  });
+
+  it('matches the server planner for local and cloud api defaults', () => {
+    expect(effectiveModelContextWindow({ type: 'api', endpoint: 'http://localhost:8000/v1' }, 'unknown')).toBeNull();
+    expect(effectiveModelContextWindow({ type: 'api', endpoint: 'http://127.0.0.1:8000/v1' }, 'unknown')).toBeNull();
+    expect(effectiveModelContextWindow({ type: 'api', endpoint: 'https://api.example.test/v1' }, 'unknown')).toBe(128_000);
+  });
+
+  it('uses explicit contextWindow and numCtx with server precedence', () => {
+    expect(effectiveModelContextWindow({ type: 'api', endpoint: 'http://localhost:11434/v1', contextWindow: 64_000, numCtx: 32_768 }, 'unknown')).toBe(64_000);
+    expect(effectiveModelContextWindow({ type: 'api', endpoint: 'http://localhost:11434/v1', numCtx: 32_768 }, 'unknown')).toBe(32_768);
+  });
+});
+
 describe('modelOptionLabel', () => {
   it('appends a context parenthetical when known', () => {
     expect(modelOptionLabel('qwen3.6:35b', { 'qwen3.6:35b': 32768 })).toBe('qwen3.6:35b (32K ctx)');
@@ -256,5 +288,30 @@ describe('mergeModelLists', () => {
   it('returns [] for no input', () => {
     expect(mergeModelLists()).toEqual([]);
     expect(mergeModelLists(undefined, null)).toEqual([]);
+  });
+});
+
+describe('visionLocalModelFilter', () => {
+  const ollama = { name: 'Ollama', endpoint: 'http://localhost:11434' };
+  const lmstudio = { name: 'LM Studio', endpoint: 'http://localhost:1234' };
+  const cloud = { name: 'OpenAI', endpoint: 'https://api.openai.com/v1' };
+
+  it('keeps only vision models for local backends (ollama/lm studio)', () => {
+    expect(visionLocalModelFilter('qwen2.5vl:32b', ollama)).toBe(true);
+    expect(visionLocalModelFilter('llava:latest', lmstudio)).toBe(true);
+    // Text-only / embedding local models are filtered out.
+    expect(visionLocalModelFilter('qwen2.5-coder:32b', ollama)).toBe(false);
+    expect(visionLocalModelFilter('nomic-embed-text', ollama)).toBe(false);
+  });
+
+  it('leaves cloud/API providers untouched (multimodal ids that miss the local regex pass)', () => {
+    // gpt-4o / claude are multimodal but their ids do not encode "vision";
+    // a local-name heuristic must NOT hide them on a cloud provider.
+    expect(visionLocalModelFilter('gpt-4o', cloud)).toBe(true);
+    expect(visionLocalModelFilter('claude-opus-4-8', cloud)).toBe(true);
+  });
+
+  it('treats an unknown/undefined provider as non-local (no filtering)', () => {
+    expect(visionLocalModelFilter('some-text-model', undefined)).toBe(true);
   });
 });

@@ -82,16 +82,80 @@ export function isTestRunner() {
 // series/issues/story-builder fixtures leaked into the real `portos` DB and
 // federated to peers. INSERT/UPDATE are now blocked too. Schema DDL
 // (CREATE/ALTER/DROP) is still allowed: it is idempotent, carries no row-data,
-// and ensureSchema() needs it to stand up portos_test. Skips leading
-// line/block comments + whitespace before the verb.
-const ROW_WRITE_SQL =
-  /^\s*(?:--[^\n]*\n|\/\*[\s\S]*?\*\/|\s)*(INSERT\s+INTO|UPDATE\s|DELETE\s+FROM|TRUNCATE)\b/i;
+// and ensureSchema() needs it to stand up portos_test.
+//
+// The first cut was `^`-anchored on a single leading verb, which let four
+// less-obvious write forms slip past the "absolute backstop": data-modifying
+// CTEs (`WITH … DELETE …`), `COPY … FROM` imports, `MERGE INTO`, and a write
+// hiding after a leading read in a multi-statement batch (`SELECT 1; DELETE …`).
+// No current store issues those forms, so this was latent rather than
+// exploitable — but the guard is billed as the last line of defense, so it now
+// matches a write verb ANYWHERE, after stripping comments so a keyword named in
+// a comment can't trip it (and a write after a comment can't slip past).
+//
+// Normalize the SQL before keyword-matching in a SINGLE left-to-right pass that
+// alternates over comments AND string literals, so whichever delimiter appears
+// FIRST consumes its own span. Order matters and a two-pass "mask strings, then
+// strip comments" is WRONG: an apostrophe inside a comment (`-- don't touch …`)
+// would open a spurious string mask that swallows a real write on the next line
+// (a false-negative — the exact failure this guard exists to prevent). Processing
+// left-to-right keeps a comment's apostrophe part of the comment, and keeps a
+// `/*` or `--` inside a string literal from starting a comment. Comments collapse
+// to a space; string literals collapse to `''` (Postgres's escaped-quote form),
+// so a write verb appearing only inside a literal can't trip the guard, and a
+// quote-embedded comment delimiter can't hide a write between two literals.
+// Dollar-quoted bodies (`$$…$$`, used in function definitions) are not unwrapped —
+// stores don't send them, so this test-only backstop accepts that edge.
+function normalizeSqlForMatch(text) {
+  return text.replace(
+    /--[^\n]*|\/\*[\s\S]*?\*\/|'(?:''|[^'])*'/g,
+    (m) => (m[0] === "'" ? "''" : ' '),
+  );
+}
+
+// CREATE TABLE … AS SELECT (CTAS) and the broader DDL family (CREATE/ALTER/DROP)
+// are knowingly NOT matched: ensureSchema() needs DDL to stand up portos_test, and
+// distinguishing a row-copying CTAS from a plain `CREATE TABLE … (col … GENERATED
+// ALWAYS AS (…))` reliably needs paren-aware parsing this regex set deliberately
+// avoids. No store issues CTAS, and the worst case on a mis-pointed run is a stray
+// new table (schema pollution) rather than corruption of existing rows.
+const ROW_WRITE_PATTERNS = [
+  /\bINSERT\s+INTO\b/i,
+  /\bDELETE\s+FROM\b/i,
+  /\bMERGE\s+INTO\b/i,
+  /\bTRUNCATE\b/i,
+  // SELECT … INTO <table> creates and populates a new table (a real row write, not
+  // DDL). Reads never carry a standalone INTO, so requiring SELECT before it keeps
+  // this off ordinary queries; INSERT/MERGE INTO are caught by their own patterns.
+  /\bSELECT\b[\s\S]+?\bINTO\b/i,
+  // UPDATE … SET — the SET clause is what makes it a write, and distinguishes it
+  // from a `SELECT … FOR UPDATE` / `FOR NO KEY UPDATE` row-lock read. `[^;]+?`
+  // keeps the match inside one statement so `… FOR UPDATE; SET search_path …`
+  // (a read followed by a session command) doesn't read as an UPDATE write.
+  /\bUPDATE\b\s+[^;]+?\bSET\b/i,
+  // COPY <table> FROM — an import writes rows. `COPY (query) TO` / `COPY <table>
+  // TO` is an export (read): requiring the first non-blank token after COPY to be
+  // a non-`(` char (`[^\s(]`) rejects the subquery-export form whose inner FROM
+  // would otherwise match, and requiring FROM before the next `;` leaves `COPY
+  // <table> TO …` (no FROM) alone. `[^\s(]` (not a `(?!\()` lookahead) is load-
+  // bearing: a lookahead lets `\s+` backtrack and pass the assertion mid-whitespace
+  // on `COPY   (SELECT … FROM …) TO`, so the export would false-positive.
+  /\bCOPY\s+[^\s(][^;]*?\bFROM\b/i,
+];
+
+// True when the SQL performs a row write in any of the recognized forms.
+function isRowWriteSql(text) {
+  const sql = normalizeSqlForMatch(text);
+  return ROW_WRITE_PATTERNS.some((re) => re.test(sql));
+}
 
 /**
  * Hard backstop: under the test runner, refuse to MUTATE a non-test database.
- * Throws (fail loudly) on any row write (INSERT/UPDATE/DELETE/TRUNCATE) instead
- * of silently writing — or stranding — real data. Reads (SELECT) and schema DDL
- * are left alone so health/version probes and ensureSchema() still work.
+ * Throws (fail loudly) on any row write — INSERT/UPDATE/DELETE/TRUNCATE/MERGE,
+ * COPY … FROM imports, data-modifying CTEs, and a write hidden in a multi-
+ * statement batch — instead of silently writing (or stranding) real data. Reads
+ * (SELECT, including COPY … TO exports) and schema DDL are left alone so
+ * health/version probes and ensureSchema() still work.
  *
  * Shared by BOTH the pool `query()` wrapper and the per-transaction client in
  * `withTransaction()`. The transaction path is critical: nearly every store
@@ -108,7 +172,7 @@ export function assertWriteAllowed(text) {
     isTestRunner() &&
     !isTestDatabase() &&
     typeof text === 'string' &&
-    ROW_WRITE_SQL.test(text)
+    isRowWriteSql(text)
   ) {
     throw new Error(
       `🛑 Refusing to mutate non-test database '${process.env.PGDATABASE || 'portos'}' under the test runner. ` +
@@ -290,6 +354,47 @@ async function ensureSchemaImpl() {
       id TEXT PRIMARY KEY,
       applied_at TIMESTAMPTZ DEFAULT NOW()
     )`,
+    `CREATE TABLE IF NOT EXISTS tribe_people (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      name TEXT NOT NULL,
+      relationship TEXT DEFAULT '',
+      ring VARCHAR(32) NOT NULL DEFAULT 'tribe',
+      cadence_days INTEGER NOT NULL DEFAULT 45,
+      last_contact_on DATE,
+      channel TEXT DEFAULT '',
+      energy VARCHAR(32) NOT NULL DEFAULT 'steady',
+      tags TEXT[] DEFAULT '{}',
+      next_move TEXT DEFAULT '',
+      notes TEXT DEFAULT '',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      deleted BOOLEAN DEFAULT FALSE,
+      deleted_at TIMESTAMPTZ
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_tribe_people_live ON tribe_people (deleted, ring, updated_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_tribe_people_tags ON tribe_people USING gin (tags)`,
+    `CREATE TABLE IF NOT EXISTS tribe_touchpoints (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      person_id UUID NOT NULL REFERENCES tribe_people(id) ON DELETE CASCADE,
+      happened_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      channel TEXT DEFAULT '',
+      summary TEXT DEFAULT '',
+      source VARCHAR(32) NOT NULL DEFAULT 'user',
+      calendar_account_id TEXT,
+      calendar_event_id TEXT,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_tribe_touchpoints_person ON tribe_touchpoints (person_id, happened_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_tribe_touchpoints_calendar ON tribe_touchpoints (calendar_account_id, calendar_event_id)`,
+    `CREATE TABLE IF NOT EXISTS tribe_memory_links (
+      person_id UUID NOT NULL REFERENCES tribe_people(id) ON DELETE CASCADE,
+      memory_id UUID NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+      note TEXT DEFAULT '',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (person_id, memory_id)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_tribe_memory_links_memory ON tribe_memory_links (memory_id)`,
   ];
   for (const sql of upgrades) {
     await pool.query(sql);
@@ -704,19 +809,61 @@ async function ensureSchemaImpl() {
     // Creative Director projects (Phase 3, issue #997). One row per project;
     // the full record lives in `data` JSONB, with status/created_at/updated_at
     // mirrored into columns (kept in lockstep on every write) for future
-    // queries. `listProjects` sorts by created_at; nothing filters status yet
-    // (the recovery scan filters in JS), so no status/updated_at index — an
-    // unused index is just write amplification. CD is local-only (not
-    // federated) so no sync_sequence/tombstone. `status` is app-layer gated
-    // (PROJECT_STATUSES), no DB CHECK. Mirrors the creative_director_projects
-    // block in init-db.sql.
+    // queries. `listProjects` sorts by created_at. `status` is app-layer gated
+    // (PROJECT_STATUSES), no DB CHECK. As of #1564 projects FEDERATE across peers
+    // via the per-record peer-sync push pipeline (record kind
+    // `creativeDirectorProject`, sync category `creativeDirectorProjects`), so
+    // the soft-delete tombstone trio (deleted/deleted_at + LWW updated_at) mirrors
+    // the authors table — a delete is a tombstone the merge keeps an out-of-date
+    // peer from resurrecting. Mirrors the creative_director_projects block in
+    // init-db.sql; the ADD COLUMN upgrades below backfill existing installs.
     `CREATE TABLE IF NOT EXISTS creative_director_projects (
       id TEXT PRIMARY KEY,
       status VARCHAR(32) NOT NULL DEFAULT 'draft',
       data JSONB NOT NULL DEFAULT '{}'::jsonb,
       created_at TIMESTAMPTZ DEFAULT NOW(),
-      updated_at TIMESTAMPTZ DEFAULT NOW()
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      deleted BOOLEAN DEFAULT FALSE,
+      deleted_at TIMESTAMPTZ
     )`,
+    // Backfill the tombstone columns on installs created before #1564 (the
+    // CREATE above is a no-op once the table exists). The partial index serves
+    // the live-list filter (deleted = FALSE).
+    `ALTER TABLE creative_director_projects ADD COLUMN IF NOT EXISTS deleted BOOLEAN DEFAULT FALSE`,
+    `ALTER TABLE creative_director_projects ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`,
+    `CREATE INDEX IF NOT EXISTS idx_creative_director_projects_live ON creative_director_projects (deleted) WHERE deleted = FALSE`,
+
+    // Mood boards (issue #911). A dedicated inspiration/mood-board canvas,
+    // distinct from raw Media History, for collecting visual + textual
+    // references that feed the Create suite. One row per board, the full record
+    // (name/description/items[]) in `data` JSONB. Items (image-by-media-key or
+    // external URL, or a text note + optional caption/source backref) live
+    // inline in the board's JSONB rather than a child table — a board is read/
+    // written whole, has a small bounded item list, and there are no cross-board
+    // item queries. `name` mirrors a column for the live-list sort. As of #1564
+    // mood boards FEDERATE across peers via the per-record peer-sync push pipeline
+    // (record kind `moodBoard`, sync category `moodBoards`), so the soft-delete
+    // tombstone trio (deleted/deleted_at + LWW updated_at) mirrors
+    // creative_director_projects — a delete is a tombstone the merge keeps an
+    // out-of-date peer from resurrecting. Mirrors the mood_boards block in
+    // init-db.sql; the ADD COLUMN upgrades below backfill existing installs.
+    `CREATE TABLE IF NOT EXISTS mood_boards (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      deleted BOOLEAN DEFAULT FALSE,
+      deleted_at TIMESTAMPTZ
+    )`,
+    // Backfill the tombstone columns on installs created before #1564 (the
+    // CREATE above is a no-op once the table exists).
+    `ALTER TABLE mood_boards ADD COLUMN IF NOT EXISTS deleted BOOLEAN DEFAULT FALSE`,
+    `ALTER TABLE mood_boards ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`,
+    // updated_at DESC is the board-list "recently touched" sort.
+    `CREATE INDEX IF NOT EXISTS idx_mood_boards_updated ON mood_boards (updated_at DESC)`,
+    // Partial index for the live-list filter (deleted = FALSE).
+    `CREATE INDEX IF NOT EXISTS idx_mood_boards_live ON mood_boards (deleted) WHERE deleted = FALSE`,
 
     // Media asset index (Phase 3.2, issue #1000). One row per generated image
     // or video; the bytes stay on disk (data/images, data/videos) and the
@@ -828,6 +975,59 @@ async function ensureSchemaImpl() {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_authors_live ON authors (deleted) WHERE deleted = FALSE`,
 
+    // Music artists (the Music studio's persona store — analogue of authors).
+    // One row per artist, the full sanitized record (name, genre, bio,
+    // musicalStyle, physicalDescription, portraitStyle, portraitImageUrl) in
+    // `data` JSONB. `name` mirrors a column for the live-list sort; the LWW/
+    // tombstone trio is populated FROM the record body. Artists are db-primary
+    // and federation-ready (LWW merge mirrors authors), but the artist record
+    // kind is not yet registered in peerSync — local-only for now (see issue #1502).
+    // Mirrors the artists block in init-db.sql.
+    `CREATE TABLE IF NOT EXISTS artists (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      deleted BOOLEAN DEFAULT FALSE,
+      deleted_at TIMESTAMPTZ
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_artists_live ON artists (deleted) WHERE deleted = FALSE`,
+
+    // Music albums (the Music studio). One row per album, the full sanitized
+    // record (title, artistId+denormalized artist, description, genre,
+    // releaseYear, coverImageUrl, ordered trackIds) in `data` JSONB. `title`
+    // mirrors a column for the live-list sort. db-primary + federation-ready
+    // (LWW merge mirrors artists), not yet registered in peerSync — local-only
+    // for now (see issue #1502). Mirrors the albums block in init-db.sql.
+    `CREATE TABLE IF NOT EXISTS albums (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      deleted BOOLEAN DEFAULT FALSE,
+      deleted_at TIMESTAMPTZ
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_albums_live ON albums (deleted) WHERE deleted = FALSE`,
+
+    // Music tracks (the Music studio). One row per track, the full sanitized
+    // record (title, albumId/artistId FKs + denormalized artist, lyrics, prompt,
+    // engine/modelId/durationSec gen metadata, audioFilename pointing into the
+    // shared music library at data/music/) in `data` JSONB. `title` mirrors a
+    // column for queries. db-primary + federation-ready, not yet registered in
+    // peerSync — local-only for now (see issue #1502). Mirrors init-db.sql.
+    `CREATE TABLE IF NOT EXISTS tracks (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      deleted BOOLEAN DEFAULT FALSE,
+      deleted_at TIMESTAMPTZ
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_tracks_live ON tracks (deleted) WHERE deleted = FALSE`,
+
     // Pipeline series (Phase 3 Create migration, issue #1015). One row per
     // series, the full sanitized record (arc/seasons/locks/covers/style) in
     // `data` JSONB, moved out of data/pipeline-series/{id}/index.json
@@ -928,9 +1128,16 @@ async function ensureSchemaImpl() {
       sort_order INTEGER DEFAULT 0,
       data JSONB NOT NULL DEFAULT '{}'::jsonb,
       created_at TIMESTAMPTZ DEFAULT NOW(),
-      updated_at TIMESTAMPTZ DEFAULT NOW()
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      deleted BOOLEAN DEFAULT FALSE,
+      deleted_at TIMESTAMPTZ
     )`,
     `CREATE INDEX IF NOT EXISTS idx_wr_folders_parent ON writers_room_folders (parent_id, sort_order)`,
+    // Idempotent upgrade for installs predating folder federation (#1645): without
+    // the soft-delete columns an old install boots the new code and hard-DELETEs a
+    // folder (no tombstone) — peers never learn it was removed and resurrect it.
+    `ALTER TABLE writers_room_folders ADD COLUMN IF NOT EXISTS deleted BOOLEAN DEFAULT FALSE`,
+    `ALTER TABLE writers_room_folders ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`,
 
     // Work manifests. The drafts[] array moves OUT of `data` into
     // writers_room_draft_versions (the one decomposition — draft versions are a
@@ -991,9 +1198,16 @@ async function ensureSchemaImpl() {
       status VARCHAR(16),
       data JSONB NOT NULL DEFAULT '{}'::jsonb,
       started_at TIMESTAMPTZ,
-      finished_at TIMESTAMPTZ
+      finished_at TIMESTAMPTZ,
+      deleted BOOLEAN DEFAULT FALSE,
+      deleted_at TIMESTAMPTZ
     )`,
     `CREATE INDEX IF NOT EXISTS idx_wr_exercises_work ON writers_room_exercises (work_id, started_at DESC)`,
+    // Idempotent upgrade for installs predating exercise federation (#1645). The
+    // tombstone columns let a peer's deletion propagate (LWW never propagates a
+    // hard delete); no current path deletes an exercise but a future peer might.
+    `ALTER TABLE writers_room_exercises ADD COLUMN IF NOT EXISTS deleted BOOLEAN DEFAULT FALSE`,
+    `ALTER TABLE writers_room_exercises ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`,
 
     // LoRA training runs (character LoRA training). MUST live here, not only
     // in init-db.sql — init-db.sql runs only on fresh `db.sh setup-native`
@@ -1094,8 +1308,8 @@ async function ensureSchemaImpl() {
     'universes', 'universe_runs', 'pipeline_series', 'pipeline_issues',
     'story_builder_sessions', 'writers_room_works', 'writers_room_folders',
     'writers_room_draft_versions', 'catalog_ingredients', 'catalog_scraps',
-    'catalog_user_types', 'creative_director_projects', 'lora_training_runs',
-    'authors',
+    'catalog_user_types', 'creative_director_projects', 'mood_boards',
+    'lora_training_runs', 'authors', 'artists', 'albums', 'tracks', 'tribe_people', 'tribe_touchpoints',
   ];
   for (const t of auditedTables) {
     catalogDDL.push(`DROP TRIGGER IF EXISTS trg_${t}_audit ON ${t}`);

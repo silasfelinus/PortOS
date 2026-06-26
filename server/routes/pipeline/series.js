@@ -21,6 +21,13 @@ import {
   CUSTOM_PAGE_MIN, CUSTOM_PAGE_MAX, CUSTOM_MINUTE_MIN, CUSTOM_MINUTE_MAX,
 } from '../../lib/issueLength.js';
 import { ARC_LIMITS, ARC_STATUSES, ARC_SHAPE_IDS, SEASON_STATUSES } from '../../lib/storyArc.js';
+import {
+  CHARACTER_ARC_LIMITS, CHARACTER_ARC_STATUSES, TRANSITION_KINDS,
+} from '../../lib/seriesCharacterArc.js';
+import {
+  STYLE_GUIDE_LIMITS, STYLE_GUIDE_TENSES, STYLE_GUIDE_POV_PERSONS, STYLE_GUIDE_AUDIENCES,
+  STYLE_GUIDE_RATINGS, STYLE_GUIDE_PROFANITY, STYLE_GUIDE_SPELLING,
+} from '../../lib/styleGuide.js';
 import { mapServiceError } from './shared.js';
 
 // Inline until better/code-quality lands and exports this from validation.js
@@ -54,7 +61,64 @@ const arcSchema = z.object({
   // be listed here or Zod's default key-stripping would silently drop it on any
   // arc PATCH, and updateSeries's wholesale arc replace would then wipe it.
   readerMap: z.object({}).passthrough().nullable().optional(),
+  // Ticking clock (the countdown the reader anticipates). Same defer-to-service
+  // pattern as readerMap above: accepted as an opaque object and sanitized by
+  // sanitizeTickingClock (storyArc.js). Listed here so Zod doesn't strip it on
+  // an arc PATCH and updateSeries's wholesale arc replace doesn't wipe it.
+  tickingClock: z.object({}).passthrough().nullable().optional(),
   status: z.enum(ARC_STATUSES).optional(),
+});
+
+// Per-character story arc (#1293). The arc lives on the series record as
+// `series.characterArcs[]`; every field optional so a partial save or an
+// intentional clear both round-trip, and the service-side
+// `sanitizeCharacterArcList` stays the authority (drops empty arcs/beats,
+// dedupes by character identity). Mirrors the arcSchema defer-to-sanitizer
+// pattern — Zod validates shape + caps, the sanitizer normalizes.
+const characterArcTransitionSchema = z.object({
+  id: z.string().trim().max(64).optional(),
+  kind: z.enum(TRANSITION_KINDS),
+  label: z.string().trim().max(CHARACTER_ARC_LIMITS.TRANSITION_LABEL_MAX).optional(),
+  atIssue: z.number().int().min(0).max(CHARACTER_ARC_LIMITS.ISSUE_MAX).nullable().optional(),
+  atSceneAnchor: z.string().trim().max(CHARACTER_ARC_LIMITS.TRANSITION_ANCHOR_MAX).optional(),
+  note: z.string().trim().max(CHARACTER_ARC_LIMITS.TRANSITION_NOTE_MAX).optional(),
+});
+
+const characterArcSchema = z.object({
+  characterId: z.string().trim().max(64).optional(),
+  characterName: z.string().trim().max(CHARACTER_ARC_LIMITS.CHARACTER_NAME_MAX).optional(),
+  want: z.string().trim().max(CHARACTER_ARC_LIMITS.WANT_MAX).optional(),
+  need: z.string().trim().max(CHARACTER_ARC_LIMITS.NEED_MAX).optional(),
+  startState: z.string().trim().max(CHARACTER_ARC_LIMITS.START_STATE_MAX).optional(),
+  endState: z.string().trim().max(CHARACTER_ARC_LIMITS.END_STATE_MAX).optional(),
+  transitions: z.array(characterArcTransitionSchema)
+    .max(CHARACTER_ARC_LIMITS.TRANSITIONS_PER_ARC_MAX).optional(),
+  status: z.enum(CHARACTER_ARC_STATUSES).optional(),
+});
+
+const characterArcsSchema = z.array(characterArcSchema).max(CHARACTER_ARC_LIMITS.ARCS_PER_SERIES_MAX);
+
+// Per-series style guide (house style) — #1303. Structured Zod parity for the
+// `series.styleGuide` field; every field optional + nullable so a partial
+// update or an intentional clear (null) both round-trip, and the service-side
+// `sanitizeStyleGuide` stays the authority (collapses an all-empty guide to
+// null). `tone` and `conventions` mirror the sanitizer's shape.
+const styleGuideSchema = z.object({
+  tense: z.enum(STYLE_GUIDE_TENSES).nullable().optional(),
+  povPerson: z.enum(STYLE_GUIDE_POV_PERSONS).nullable().optional(),
+  targetAudience: z.enum(STYLE_GUIDE_AUDIENCES).nullable().optional(),
+  contentRating: z.enum(STYLE_GUIDE_RATINGS).nullable().optional(),
+  profanity: z.enum(STYLE_GUIDE_PROFANITY).nullable().optional(),
+  readingLevel: z.number()
+    .min(STYLE_GUIDE_LIMITS.READING_LEVEL_MIN).max(STYLE_GUIDE_LIMITS.READING_LEVEL_MAX)
+    .nullable().optional(),
+  tone: z.array(z.string().trim().min(1).max(STYLE_GUIDE_LIMITS.TONE_MAX))
+    .max(STYLE_GUIDE_LIMITS.TONES_MAX).optional(),
+  conventions: z.object({
+    oxfordComma: z.boolean().nullable().optional(),
+    spelling: z.enum(STYLE_GUIDE_SPELLING).nullable().optional(),
+    italicizeThoughts: z.boolean().nullable().optional(),
+  }).nullable().optional(),
 });
 
 // Volume-cover / back-cover sub-schema — accepts the script text plus the
@@ -114,8 +178,17 @@ const seriesCreateSchema = z.object({
   writersRoomWorkId: z.string().trim().max(seriesSvc.WRITERS_ROOM_WORK_ID_MAX).nullable().optional(),
   arc: arcSchema.nullable().optional(),
   seasons: z.array(seasonSchema).max(ARC_LIMITS.SEASONS_PER_SERIES_MAX).optional(),
+  characterArcs: characterArcsSchema.optional(),
   locked: seriesLockedSchema.optional(),
   styleNotes: z.string().trim().max(seriesSvc.STYLE_NOTES_MAX).optional().default(''),
+  // Per-series editorial-check config overrides (#1591). Free-form blob (re-validated
+  // per check at run time, bounded by sanitizeEditorialCheckConfig); forwarded so an
+  // importer / share-bucket create that seeds tuned thresholds keeps them.
+  editorialCheckConfig: z.record(z.record(z.unknown())).nullable().optional(),
+  // Fact-checking opt-in + author fact reference (#1588).
+  factCritical: z.boolean().optional().default(false),
+  factReference: z.string().trim().max(seriesSvc.FACT_REFERENCE_MAX).optional().default(''),
+  styleGuide: styleGuideSchema.nullable().optional(),
   titleLogo: z.string().trim().max(seriesSvc.TITLE_LOGO_MAX).optional().default(''),
   author: z.string().trim().max(seriesSvc.AUTHOR_MAX).optional().default(''),
   authorId: z.string().trim().max(seriesSvc.AUTHOR_ID_MAX).nullable().optional(),
@@ -137,8 +210,13 @@ const seriesPatchSchema = z.object({
   writersRoomWorkId: z.string().trim().max(seriesSvc.WRITERS_ROOM_WORK_ID_MAX).nullable().optional(),
   arc: arcSchema.nullable().optional(),
   seasons: z.array(seasonSchema).max(ARC_LIMITS.SEASONS_PER_SERIES_MAX).optional(),
+  characterArcs: characterArcsSchema.optional(),
   locked: seriesLockedSchema.optional(),
   styleNotes: z.string().trim().max(seriesSvc.STYLE_NOTES_MAX).optional(),
+  // Fact-checking opt-in + author fact reference (#1588).
+  factCritical: z.boolean().optional(),
+  factReference: z.string().trim().max(seriesSvc.FACT_REFERENCE_MAX).optional(),
+  styleGuide: styleGuideSchema.nullable().optional(),
   titleLogo: z.string().trim().max(seriesSvc.TITLE_LOGO_MAX).optional(),
   author: z.string().trim().max(seriesSvc.AUTHOR_MAX).optional(),
   authorId: z.string().trim().max(seriesSvc.AUTHOR_ID_MAX).nullable().optional(),
@@ -149,6 +227,12 @@ const seriesPatchSchema = z.object({
   issueCountTarget: z.number().int().min(0).max(seriesSvc.ISSUE_COUNT_TARGET_MAX).optional(),
   llm: llmSchema,
   ephemeral: z.boolean().optional(),
+  // Per-series editorial-check config overrides (#1591): { [checkId]: { [key]: value } }.
+  // A free-form blob (like the global per-check `config`) — re-validated against each
+  // check's own Zod configSchema at run time (applySeriesCheckConfig) and bounded by
+  // sanitizeEditorialCheckConfig on persist; this gate just keeps the wire shape sane.
+  // `null`/`{}` clears all overrides.
+  editorialCheckConfig: z.record(z.record(z.unknown())).nullable().optional(),
 }).refine((p) => Object.keys(p).length > 0, { message: 'patch must include at least one field' });
 const arcFieldLockSchema = z.object({ locked: z.boolean() });
 

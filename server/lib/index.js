@@ -25,6 +25,7 @@ export * as genomeValidation from './genomeValidation.js';
 export * as identityValidation from './identityValidation.js';
 export * as meatspaceValidation from './meatspaceValidation.js';
 export * as memoryValidation from './memoryValidation.js';
+export * as moodBoardValidation from './moodBoardValidation.js';
 export * as notesValidation from './notesValidation.js';
 export * as peerSyncValidation from './peerSyncValidation.js';
 export * as postValidation from './postValidation.js';
@@ -50,9 +51,12 @@ export * from './creativeDirectorPrompts.js';
 export * as editorial from './editorial/index.js';
 export * from './sceneExtractor.js';
 export * from './scenePrompt.js';
+export * from './shotGrammar.js';
 export * from './seasonStructure.js';
+export * from './seriesCharacterArc.js';
 export * from './seriesLlmOverride.js';
 export * from './storyArc.js';
+export * from './styleGuide.js';
 export * from './storyBuilderIntegrity.js';
 export * from './storyBuilderSteps.js';
 // `storyBible.js` re-exports `normalizeSlugline` from `scenePrompt.js` for
@@ -101,16 +105,20 @@ export * from './fileWriteQueue.js';
 export * from './schemaVersions.js';
 export * from './imageClean.js';
 export * from './imageWatermark.js';
+export * from './localImageFilename.js';
 export * from './multipart.js';
 export * from './safetensors.js';
 export * from './assetHash.js';
 export * from './pdfImageEmbed.js';
 export * from './zipStream.js';
+export * from './zipWriter.js';
 
 // === Process execution ===
+export * from './agentGuard/index.js';
 export * from './bashResolver.js';
 export * from './bufferedSpawn.js';
 export * from './commandSecurity.js';
+export * from './detachedSpawn.js';
 export * from './execGit.js';
 export * from './ffmpeg.js';
 export * from './gitArgs.js';
@@ -178,6 +186,7 @@ export * from './pgTools.js';
 export * from './platform.js';
 export * from './ports.js';
 export * from './timezone.js';
+export * from './viteAllowedHosts.js';
 
 // === General utilities ===
 export * from './apiRegistry.js';
@@ -194,6 +203,7 @@ export * from './singleFlight.js';
 export * from './streamBackpressure.js';
 export * from './sseUtils.js';
 export * from './uuid.js';
+export * from './workTracker.js';
 export * from './workspaceRoots.js';
 export * from './zodCompat.js';
 

@@ -33,6 +33,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `identityValidation.js` | Identity section + chronotype + scheduling schemas. |
 | `meatspaceValidation.js` | Meatspace (location/health log) schemas. |
 | `memoryValidation.js` | Memory record + retrieval schemas. |
+| `moodBoardValidation.js` | Mood board + board-item create/update schemas. |
 | `notesValidation.js` | Notes route schemas + safe-relative-path guard. |
 | `peerSyncValidation.js` | Federated peer-sync wire/request schemas (push payload, subscribe, sync-now, pull-metadata). |
 | `postValidation.js` | Social post schemas. |
@@ -47,12 +48,15 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `editorial/` | Extensible editorial-check registry (#1284) — `EDITORIAL_CHECKS` + fail-fast guards + lookup/state helpers. See `editorial/README.md`. The runner that executes checks lives at `server/services/pipeline/editorial/checkRunner.js`. |
 | `storyBible.js` | Canonical Character / Place / Object shapes + `BIBLE_LIMITS`. |
 | `storyArc.js` | Canonical Arc + Season + Reader-Map shapes for pipeline arc planning. |
+| `styleGuide.js` | Per-series house style (tense/POV/audience/rating/reading-level/tone/conventions): `sanitizeStyleGuide` + `renderStyleGuide` generation block + enums. |
 | `storyBuilderSteps.js` | Unified Story Builder ordered step definitions + helpers (`STEPS`, `STEP_IDS`, `STEP_STATUSES`, `isValidStepId`, `stepIndex`). |
 | `storyBuilderIntegrity.js` | Pure staleness hashing for the Story Builder (`hashUpstream`, `computeStaleSteps`, `computeSyncDrift`). |
 | `canonPrompt.js` | Per-kind field-precedence rules; SHORT/RICH/PREVIEW spec tables; `flattenCanonDescriptorFragments` / `mapCanonDescriptorFragments` / `descriptorForCanonEntry`. |
 | `scenePrompt.js` | Scene-prompt composer + bible matchers (chars/places/objects in text). |
 | `sceneExtractor.js` | Split prose or teleplay into scene list via LLM. |
+| `shotGrammar.js` | Pure shot-grammar vocabularies (`SHOT_TYPES`, `SCREEN_DIRECTIONS`) + normalizers (`normalizeShotType`, `normalizeScreenDirection`) for a storyboard shot's camera framing + on-screen direction. Shared by the scene extractor's sanitizer, the storyboards Zod schema, and the `visual.shot-continuity` editorial check (#1315). |
 | `seasonStructure.js` | Season/episode structure recommendation. |
+| `seriesCharacterArc.js` | Per-character story-arc shapes (`series.characterArcs[]`): want/need, start → end state, transition beats. Sanitizers + `renderCharacterArcsForPrompt` for the `arc.transitions` editorial check. |
 | `seriesLlmOverride.js` | Pure `resolveSeriesLlmOverride(series, { overrideProvider, overrideModel })` → `{ provider, model, providerMatchesSeries }` — shared fallback so Pipeline LLM actions honor the series' configured provider/model, only inheriting the series model when the effective provider still matches. |
 | `bibleExtractor.js` | LLM bible-extraction stage + sanitization. |
 | `catalogBulkParsers.js` | Dependency-free markdown/CSV/JSON parsers for `POST /api/catalog/bulk-import` and YAML/markdown serializers for `GET /api/catalog/export`. |
@@ -88,11 +92,11 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `runners.js` | Image-runner family constants. |
 | `codexAssistantExtract.js` | Strip Codex CLI banner + echoed metadata from session transcript. |
 | `codexCliOutput.js` | Network/system error patterns for `agentErrorAnalysis.js`. |
-| `contextBudget.js` | Context-window budgeter for editorial passes. `estimateTokens` (chars/4), `usableInputTokens`, `planManuscriptPass({ contextWindow, sections })` → `{ mode: 'whole' \| 'chunked', chunks }`. Decides whole-manuscript vs chunked given a model's window. |
+| `contextBudget.js` | Context-window budgeter for editorial passes. `estimateTokens` (chars/4), `usableInputTokens`, `manuscriptContentBudgetChars` (single-block content cap floored at a manuscript minimum so a standalone stage trims to fit a small window instead of overflowing a fixed 48–60K floor, #1488), `planManuscriptPass({ contextWindow, sections })` → `{ mode: 'whole' \| 'chunked', chunks }`. Also `fitContextToManuscriptFloor`/`capContextOverhead`/`trimContextToBudget` — trim a re-sent context block (scene map, character arcs, …) so a large reverse outline on a small window can't starve the manuscript chunk below a budget floor (#1459). Decides whole-manuscript vs chunked given a model's window. |
 | `ansiStrip.js` | Streaming ANSI / control-byte stripper. |
 | `hfToken.js` | HuggingFace token resolution (settings > env > CLI). |
 | `hfErrors.js` | Parse huggingface_hub gated-access errors: `extractGatedRepo(text)` → `owner/name` (or null) for the UI's license deep-link. Shared by the image runner and LoRA trainer. Pure. |
-| `hfCache.js` | HuggingFace Hub cache inspection (`inspectModelCache(repoId)` → `{cached,sizeBytes,snapshotPath}`, `isModelCached`, `getHfCacheRoot`). Drives the inline "Available / Download" badge on the image + video gen forms. |
+| `hfCache.js` | HuggingFace Hub cache inspection (`inspectModelCache(repoId)` → `{cached,sizeBytes,snapshotPath}`, `isModelCached`, `getHfCacheRoot`). Drives the inline "Available / Download" badge on the image + video gen forms. Also `verifyModelCache(repoId,{deep})` (structural safetensors-header + optional sha256 integrity check) and `repairModelCache(repoId,{deep})` (delete corrupt weight files so the download path re-fetches them) — power the "Repair model" banner. |
 | `hfDownload.js` | `downloadHfRepo({repo,onEvent})` returning `{promise,kill}` — spawns `scripts/hf_download_repo.py` in the FLUX.2 venv (fallback: mflux pythonPath) and emits SSE-friendly stage/progress/complete events. Powers the inline "Download" button next to the model picker. |
 | `sseDownload.js` | `startHfDownloadStream({req,res,repo,alreadyDownloadedMessage})`, `openSseStream(res)` (`{send,safeEnd}` SSE boilerplate), `SSE_HEADERS` — shared SSE driver used by both image and video gen `/models/:id/download` routes. Owns the cross-route in-flight Map so a double-click (or both pages running) can't spawn two python children against the same repo. |
 
@@ -107,20 +111,24 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `fileWriteQueue.js` | Single-tail promise chain for serializing writes to a file. |
 | `imageClean.js` | `cleanImageBuffer` (sharp-based denoise + C2PA strip) + `autoCleanGeneratedImage` (in-place clean for post-generation hook). HTTP route in `routes/imageClean.js` wraps `cleanImageBuffer`. |
 | `imageWatermark.js` | `removeCornerWatermark` (erases the visible Gemini/Nano-Banana bottom-right ✦ via dependency-free harmonic/Laplace inpaint) + pure helpers `resolveWatermarkRegion` / `inpaintRegion`. Distinct from SynthID regen — this targets the *visible* corner logo. |
+| `localImageFilename.js` | `localImageFilename(urlOrPath)` resolves a stored image reference to the bare gallery-image filename under `data/images/` (or null for empty/external-URL/non-image-path) — the unit the peer-sync asset pipeline hashes + transfers. Single source of truth for the authors/artists/albums/Creative-Director filename resolvers (`headshotImageFilename`/`portraitImageFilename`/`coverImageFilename`/`startingImageFilename` are thin wrappers). Also exports `assetBasename(pathOrName)`, the shared strip-querystring→basename primitive (reused by moodBoard's `imageUrlToAppAsset`). |
 | `multipart.js` | Streaming multipart/form-data parser. |
 | `safetensors.js` | `readSafetensorsHeader(path)` reads only the JSON header of a `.safetensors` file (never the tensor payload). `detectFlux2VariantFromHeader(header)` / `detectFlux2Variant(path)` classify a LoRA as FLUX.2 Klein `'4b'` (hidden dim 3072) vs `'9b'` (4096) by transformer-block tensor shapes, so the LoRA picker can hide off-variant weights that would silently fail to load. |
 | `pdfImageEmbed.js` | PDF image embed helpers for comic / volume PDFs. |
-| `zipStream.js` | Streaming ZIP parser (`parseZip`, unzipper-style); `extractZipEntryToBuffer(path, match)` cracks one member out to a Buffer. |
+| `zipStream.js` | Streaming ZIP parser (`parseZip`, unzipper-style); `collectZipEntry(entry, maxBytes?)` buffers one `parseZip` entry into a Buffer (size-capped); `extractZipEntryToBuffer(path, match)` cracks one member out to a Buffer. |
+| `zipWriter.js` | Minimal ZIP writer — `createZip(entries)` builds a stored (uncompressed) archive Buffer that round-trips through `parseZip`; `crc32(buf)` is the dependency-free checksum it uses. |
 | `assetHash.js` | Cross-transport SHA-256 cache for `data/images/*` — persists hashes in the asset's `.metadata.json` sidecar so the share-bucket exporter and the federated peer-sync push pipeline reuse the same value. `sidecarGenParamsHash` canonically hashes a sidecar's gen-params (excludes the machine-local `sha256` cache block) for cross-machine sidecar-convergence comparisons. |
 
 ## Process execution
 
 | Module | Purpose |
 |---|---|
+| `agentGuard/` | `agentGuardEnv(baseEnv?)` + `AGENT_GUARD_BIN` — env patch that prepends a guarded `pm2` shim (`bin/pm2`) to a spawned AI agent's PATH so a confused `--dangerously-skip-permissions` agent can't `pm2 kill` / `pm2 delete all` the shared daemon (which would down every app, incl. PortOS). Blocked-subcommand list mirrors `validatePm2Command` in `commandSecurity.js`. POSIX-only (no-op on Windows). |
 | `bashResolver.js` | `resolveBashBinary()` — resolves the POSIX `bash` for running bundled `*.sh` scripts (e.g. `scripts/db.sh`). On Windows a bare `bash` often resolves (via PM2's PATH) to WSL, which mounts drives at `/mnt/h` and can't see a `H:/...` drive path (exit 127); this prefers Git Bash (PORTOS_BASH override → standard install dirs → derived from `git` on PATH → bare `bash`). No-op (`bash`) on non-Windows. |
 | `openFolder.js` | `openFolderInSystemExplorer(localPath)` — cross-platform "open in Finder/Explorer/Nautilus" via detached spawn; child `error` handler prevents spawn failures from crashing the process. |
 | `bufferedSpawn.js` | `bufferedSpawn(cmd, args, opts)` (structured non-throwing result) + `bufferedSpawnOrThrow` (throwing adapter), plus `killProcessTree`, `needsShell`, `IS_WIN32`, `WIN_CMD_SHIMS`, `MAX_OUTPUT_BYTES` — shared buffered-spawn machinery with capped stdout/stderr, timeout-kill, and Windows `taskkill /T /F` tree-kill. Used by `appBuilder.js` and `appUpdater.js`. |
-| `commandSecurity.js` | Allowlist of safe shell commands. |
+| `commandSecurity.js` | Allowlist of safe shell commands + `validatePm2Command(args)` (rejects daemon-wide `pm2 kill`/`startup`/`unstartup` and `<verb> all`). `validateCommand` runs the pm2 check for `pm2` base commands. Mirrored by the `agentGuard/` PATH shim for agentic paths. |
+| `detachedSpawn.js` | `spawnDetached(bin, args, {controlDir,env,cwd})` → ChildProcess-like handle for a long media job that SURVIVES `pm2 restart portos-server`. A pure-`sh` double-fork reparents the job to init (escaping pm2's PPID-based TreeKill — `detached:true` alone doesn't, since it only changes the process group); the server tails on-disk log files for `stdout`/`stderr`/`close`. Used by loraTraining + videoGen. Also exports `reattachDetached(controlDir)` / `isReattachable(controlDir)` to RE-ATTACH a survivor after a restart (boot re-attach, #1332) and `reapDetached` to checkpoint-kill one when re-attach isn't possible. |
 | `execGit.js` | `execGit` utility imported by `git.js` + worktree manager. |
 | `ffmpeg.js` | Shared ffmpeg helpers (videoGen + videoTimeline). |
 | `gitArgs.js` | `PROTECTED_BRANCHES`, `validateFilePaths(files)` — pure command-arg builders/validators for `git.js` (reject injection/traversal in staged paths). |
@@ -183,7 +191,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `localLlmCatalog.js` | Curated cross-backend (Ollama↔LM Studio) local-LLM catalog + install-id mapping for the migrate flow. Pure. |
 | `localLlmDisk.js` | Pure on-disk reasoning for the migrate "copy GGUF locally instead of re-downloading" fast-path (Ollama manifest/blob parsing, LM Studio path layout, MLX/projector/shard detection). |
 | `localModelHeuristics.js` | Capability heuristics for untyped local (Ollama/LM Studio) models. `isEmbeddingModel`/`isGenerationModel` (so a generation/fallback run never picks an embedding model like `nomic-embed-text`); `isVisionModel(model)` (string id or model card — prefers explicit `type:'vlm'`/`capabilities:['vision']` metadata, falls back to id regex; used by the LoRA captioner); `recommendEditorialModel(models)` ranks installed models for editorial review/editing. Pure. Mirror `isEmbeddingModel`/`isVisionModel` in `client/src/utils/providers.js`. |
-| `loraDataset.js` | Pure helpers for character LoRA training datasets (`data/lora-datasets/`): `sanitizeLoraDataset` (collectionStore sanitizer), `deriveTriggerWord` (name → single-token slug with collision suffix), `prefixCaption` (idempotent trigger-word prefixing), `buildVariationMatrix` (deterministic view/pose/expression/outfit tuples for batch generation), `computeDatasetReadiness` (trainable gate: ≥`MIN_TRAINING_IMAGES` ready+captioned images, plus an advisory `recommended`/`quality` tier via `datasetQualityTier` nudging toward `RECOMMENDED_TRAINING_IMAGES`). Prompt building + I/O live in `services/loraDatasetGenerate.js` / `services/loraDatasets.js`. |
+| `loraDataset.js` | Pure helpers for character LoRA training datasets (`data/lora-datasets/`): `sanitizeLoraDataset` (collectionStore sanitizer), `deriveTriggerWord` (name → single-token slug with collision suffix), `prefixCaption` (idempotent trigger-word prefixing), `buildVariationMatrix` (deterministic view/pose/expression/outfit tuples for batch generation), `computeDatasetReadiness` (trainable gate: ≥`MIN_TRAINING_IMAGES` ready+captioned images, plus an advisory `recommended`/`quality` tier via `datasetQualityTier` nudging toward `RECOMMENDED_TRAINING_IMAGES`), `analyzeCaptionInvariants` (flags identity fragments repeated across ≥`INVARIANT_SHARE_THRESHOLD` of captions — those bind to the caption phrases instead of the trigger token, issue #1320) + `stripSharedFragments` (rewrite one caption with those fragments removed, trigger preserved). Prompt building + I/O live in `services/loraDatasetGenerate.js` / `services/loraDatasets.js`. |
 | `issueLength.js` | Per-issue size targets fed into text stages. |
 | `mediaItemKey.js` | `<kind>:<ref>` key vocabulary for media items. |
 | `navManifest.js` | Single source of truth for nav (`⌘K` palette + voice). Add an entry when you add a page. |
@@ -202,8 +210,9 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `pgTimestamp.js` | `mirrorTimestamp(value, fallback)` — coerce a hand-editable timestamp into a value Postgres TIMESTAMPTZ always accepts (or fall back), guarding boot-time binds against `Date.parse` rollover + out-of-range years. |
 | `pgTools.js` | `pg_dump` binary resolution shared by the backup snapshot path and the native↔Docker export path: `resolvePgDumpBinary(serverMajor)` (PORTOS_PGDUMP override → version-aware auto-select → bare `pg_dump`), plus the lower-level `pickPgDump` / `discoverPgDumpCandidates` / `resolvePgDump`. Picks the closest installed `pg_dump` whose major is ≥ the running server's. |
 | `ports.js` | Canonical PORTS object (re-exported from `ecosystem.config.cjs`). |
-| `platform.js` | Platform/OS detection helpers. |
+| `platform.js` | Platform/OS detection helpers — listening-port probes plus `isAppleSilicon()` (arm64 darwin; gates MLX model features, detect at the route boundary). |
 | `timezone.js` | Timezone utilities for scheduling. |
+| `viteAllowedHosts.js` | Detect and remediate a managed app's Vite `server.allowedHosts`. `findViteConfig(repoPath)` locates the config; `parseAllowedHosts(src)` / `hostIsAllowed(parsed, host)` decide whether a Tailscale/IP host would be accepted (mirrors Vite's localhost+IP-always-allowed and leading-dot-suffix rules); `rewriteAllowedHosts(src)` deterministically injects `allowedHosts: true` (or bails `ok:false` on ambiguous shapes so the caller can fall back to an LLM fix); `checkViteHost(repoPath, host)` is the one-shot status used by `GET /api/apps/:id/vite-host-check`. |
 | `buildId.js` | Build-ID derived from the built client bundle. |
 
 ## General utilities
@@ -224,6 +233,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `sseUtils.js` | Per-job SSE stream helpers (imageGen + others) plus `createSseRunner` — the shared batch-runner lifecycle (runs map, terminal-frame replay, cancel, fire-and-forget coordinator) used by the pipeline completeness/analysis/checks runners. |
 | `streamBackpressure.js` | `awaitWritableDrain(res)` — park a streaming-response producer on the socket's next `drain` (or `close`) when `res.write()` returned false, so SSE/NDJSON writes stay bounded for a slow reader. Shared by `routes/ask.js` (SSE) and `routes/localLlm.js` (NDJSON). |
 | `uuid.js` | `v4()` thin wrapper over `crypto.randomUUID()`. |
+| `workTracker.js` | `WORK_TRACKERS`/`CONCRETE_WORK_TRACKERS`/`DEFAULT_WORK_TRACKER`, `workTrackerLabel`, `hostToWorkTracker`, `forgeCliForTracker`, `trackerToClaimTaskType`, `hostFromOriginUrl` (subgroup-tolerant host parse), pure `resolveWorkTracker({configured,host})`, async `resolveAppWorkTracker(app)` — resolves a managed app's autonomous work source (PLAN.md / GitHub / GitLab / JIRA), defaulting `'auto'` to the git origin host. Consumed by the `claim-work` router in `cosTaskGenerator.js` and `routes/apps.js`. |
 | `workspaceRoots.js` | Shared allow-list for routes that take a caller-supplied filesystem path. `ALLOWED_WORKSPACE_ROOTS` (defaults + `PORTOS_WORKSPACE_ROOTS`, symlink-resolved), `isWithinRoot(resolvedPath, root)` (separator-safe containment), `isWithinAllowedRoots(realPath)`, and `WORKSPACE_ROOTS_CONFIGURED` (true when the operator set the env var — lets a permissive-by-default route like `routes/detect.js` opt into confinement). Used by `routes/commands.js` (always scoped) and `routes/detect.js` (scoped only when configured). |
 | `zodCompat.js` | Zod 4 compatibility helpers. `partialWithoutDefaults(objectSchema)` — like `.partial()` but strips inner field defaults first, so a PATCH/update schema doesn't inject (and clobber) the stored values of fields the caller didn't send. Use for any update schema derived from a defaulted base. |
 

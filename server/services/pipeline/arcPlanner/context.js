@@ -8,8 +8,9 @@
  */
 
 import { MANUSCRIPT_TYPES } from '../series.js';
-import { listIssues } from '../issues.js';
-import { ARC_ROLES as ARC_ROLE_LIST, ARC_SHAPE_IDS, READER_MAP_BEAT_KINDS, buildSeason, renderArcShapeGuidance, sanitizeSeasonList } from '../../../lib/storyArc.js';
+import { listIssues, STAGE_INPUT_MAX } from '../issues.js';
+import { ARC_ROLES as ARC_ROLE_LIST, ARC_SHAPE_IDS, READER_MAP_BEAT_KINDS, buildSeason, renderArcShapeGuidance, renderTickingClock, sanitizeSeasonList } from '../../../lib/storyArc.js';
+import { composeStyleNotes } from '../../../lib/styleGuide.js';
 import { describeStructure, recommendStructure } from '../../../lib/seasonStructure.js';
 import { DEFAULT_LENGTH_PROFILE, LENGTH_PROFILE_NAMES } from '../../../lib/issueLength.js';
 import { getUniverse } from '../../universeBuilder.js';
@@ -275,10 +276,21 @@ export async function collectManuscriptByType(seriesId) {
 // "the bible block" — both passes must see the same series identity.
 export const SHAPE_GUIDANCE_NONE = '(no Vonnegut story shape selected — the verifier should not flag shape adherence)';
 
+// Append the ticking-clock guidance (only when the clock is enabled) to an
+// arc-level shape-guidance block. Every arc/reader-map prompt already renders
+// `{{{shapeGuidance}}}`, so folding the countdown in here surfaces it to
+// generation without adding a new template variable — and therefore without a
+// stage-prompt migration. Returns the guidance unchanged when there's no
+// enabled clock.
+export function appendTickingClock(shapeGuidance, arc) {
+  const clock = renderTickingClock(arc?.tickingClock);
+  return clock ? `${shapeGuidance}\n\n${clock}` : shapeGuidance;
+}
+
 export async function buildArcBaseContext(series, preloadedWorld) {
   const arc = series.arc || {};
   const world = await resolveWorldContext(series, preloadedWorld);
-  const shapeGuidance = renderArcShapeGuidance(arc.shape) || SHAPE_GUIDANCE_NONE;
+  const shapeGuidance = appendTickingClock(renderArcShapeGuidance(arc.shape) || SHAPE_GUIDANCE_NONE, arc);
   return {
     series: {
       name: series.name,
@@ -311,14 +323,20 @@ export async function buildArcOverviewContext(series, preloadedWorld) {
   // section fires (honor mode); when it's empty the `{{^pickedShapeId}}`
   // inverted section fires (propose mode). promptTemplate.js treats `''` as
   // falsy per Mustache spec, so the empty string is the right sentinel.
-  const shapeGuidance = renderArcShapeGuidance(arc.shape)
-    || `(no shape selected — you must propose one of: ${ARC_SHAPE_IDS.join(', ')}. Return your pick as the JSON field "shape". Choose the shape that best matches the premise's emotional trajectory.)`;
+  const shapeGuidance = appendTickingClock(
+    renderArcShapeGuidance(arc.shape)
+      || `(no shape selected — you must propose one of: ${ARC_SHAPE_IDS.join(', ')}. Return your pick as the JSON field "shape". Choose the shape that best matches the premise's emotional trajectory.)`,
+    arc,
+  );
   return {
     series: {
       name: series.name,
       logline: series.logline,
       premise: series.premise,
-      styleNotes: series.styleNotes,
+      // Structured style guide folded into the free-text notes (see
+      // composeStyleNotes) so arc generation respects house style without a
+      // new template variable / migration.
+      styleNotes: composeStyleNotes(series),
       issueCountTarget: series.issueCountTarget,
     },
     ...world,
@@ -383,7 +401,7 @@ export async function buildReaderMapContext(series, preloadedWorld) {
       themesCsv: Array.isArray(arc.themes) ? arc.themes.join(', ') : '',
       shape: arc.shape || '',
     },
-    shapeGuidance: renderArcShapeGuidance(arc.shape) || SHAPE_GUIDANCE_NONE,
+    shapeGuidance: appendTickingClock(renderArcShapeGuidance(arc.shape) || SHAPE_GUIDANCE_NONE, arc),
     issueBoundaries,
     beatKindsCsv: READER_MAP_BEAT_KINDS.join(', '),
     existingReaderMapJson: arc.readerMap ? JSON.stringify(arc.readerMap, null, 2) : '(none yet)',
@@ -396,6 +414,37 @@ export async function buildReaderMapContext(series, preloadedWorld) {
  * looked up via `listIssues` so the verify pass sees the *current* set, not
  * a stale snapshot.
  */
+// Group issues into the season→episode tree both verify passes feed the LLM.
+// Mechanically shared shape: issues bucket by `seasonId` (an `null` bucket for
+// ungrouped issues so the LLM still sees them), each bucket sorted by
+// arcPosition, then mapped onto the season list with an appended
+// `(ungrouped issues)` node. Callers supply the two things that diverge:
+//   - `renderLeaf(iss)` — how each issue renders (synopsis-object vs. beats)
+//   - `seasonFields(s)` — the per-season metadata (verify carries `status`,
+//     the beat pass does not); `episodes` is always appended last so the JSON
+//     key order matches the previous hand-rolled builders byte-for-byte.
+export function groupIssuesBySeasonTree(seasons, issues, { renderLeaf, seasonFields }) {
+  const issuesBySeason = new Map();
+  for (const iss of issues) {
+    const key = iss.seasonId || null;
+    if (!issuesBySeason.has(key)) issuesBySeason.set(key, []);
+    issuesBySeason.get(key).push(iss);
+  }
+  for (const list of issuesBySeason.values()) {
+    list.sort(compareIssuesByPosition);
+  }
+  const renderBucket = (list) => list.map(renderLeaf);
+  const tree = seasons.map((s) => ({
+    ...seasonFields(s),
+    episodes: renderBucket(issuesBySeason.get(s.id) || []),
+  }));
+  const ungrouped = issuesBySeason.get(null) || [];
+  if (ungrouped.length) {
+    tree.push({ number: null, title: '(ungrouped issues)', episodes: renderBucket(ungrouped) });
+  }
+  return tree;
+}
+
 export async function buildVerifyContext(series, preloadedWorld) {
   const seasons = sanitizeSeasonList(series.seasons || []);
   const [issues, base, canon] = await Promise.all([
@@ -403,46 +452,27 @@ export async function buildVerifyContext(series, preloadedWorld) {
     buildArcBaseContext(series, preloadedWorld),
     getSeriesCanon(series),
   ]);
-  // Group issues by seasonId so the tree's leaf order matches the seasons'
-  // arcPosition order. Ungrouped issues land in a `null` bucket so the LLM
-  // sees them too.
-  const issuesBySeason = new Map();
-  for (const iss of issues) {
-    const key = iss.seasonId || null;
-    if (!issuesBySeason.has(key)) issuesBySeason.set(key, []);
+  const tree = groupIssuesBySeasonTree(seasons, issues, {
     // `synopsis` key (not `beats`) so it matches the prompt's existing
     // language; sourced from idea.input which carries the LLM's logline+synopsis.
-    const synopsis = (iss.stages?.idea?.input || '').trim();
-    issuesBySeason.get(key).push({
+    renderLeaf: (iss) => ({
       number: iss.number,
       title: iss.title,
       status: iss.status,
       arcPosition: iss.arcPosition,
-      synopsis: synopsis || null,
-    });
-  }
-  for (const list of issuesBySeason.values()) {
-    list.sort(compareIssuesByPosition);
-  }
-  const tree = seasons.map((s) => ({
-    number: s.number,
-    title: s.title,
-    logline: s.logline,
-    synopsis: s.synopsis,
-    endingHook: s.endingHook,
-    episodeCountTarget: s.episodeCountTarget,
-    themes: s.themes,
-    status: s.status,
-    episodes: issuesBySeason.get(s.id) || [],
-  }));
-  const ungrouped = issuesBySeason.get(null) || [];
-  if (ungrouped.length) {
-    tree.push({
-      number: null,
-      title: '(ungrouped issues)',
-      episodes: ungrouped,
-    });
-  }
+      synopsis: (iss.stages?.idea?.input || '').trim() || null,
+    }),
+    seasonFields: (s) => ({
+      number: s.number,
+      title: s.title,
+      logline: s.logline,
+      synopsis: s.synopsis,
+      endingHook: s.endingHook,
+      episodeCountTarget: s.episodeCountTarget,
+      themes: s.themes,
+      status: s.status,
+    }),
+  });
   return {
     ...base,
     seasonsTreeJson: JSON.stringify(tree, null, 2),
@@ -469,6 +499,37 @@ export function shapeVerifyIssues(rawIssues) {
       problem: problem.slice(0, 2000),
       suggestion: typeof raw?.suggestion === 'string' ? raw.suggestion.trim().slice(0, 2000) : '',
     });
+  }
+  return out;
+}
+
+// Max episode-synopsis corrections an auto-resolve pass may apply in one round.
+// A bound (mirrors RESOLVE_FINDING_MAX) so a runaway LLM response can't rewrite
+// the entire episode lineup in a single convergence step.
+export const RESOLVE_EPISODE_MAX = 50;
+
+/**
+ * Shape the auto-resolve pass's optional `episodes[]` output — a SPARSE list of
+ * episode-synopsis corrections the resolver applies when a finding originates at
+ * the episode level (see pipeline-arc-resolve.md rule 8). Each entry must carry
+ * an integer `episodeNumber` and a non-empty `synopsis`; `seasonNumber` is
+ * optional disambiguation. Malformed entries are dropped so a partial response
+ * never throws.
+ */
+export function shapeEpisodeResolutions(rawEpisodes) {
+  if (!Array.isArray(rawEpisodes)) return [];
+  const out = [];
+  for (const raw of rawEpisodes) {
+    const synopsis = typeof raw?.synopsis === 'string' ? raw.synopsis.trim() : '';
+    const episodeNumber = Number(raw?.episodeNumber);
+    if (!synopsis || !Number.isInteger(episodeNumber)) continue;
+    const seasonNumberRaw = Number(raw?.seasonNumber);
+    out.push({
+      seasonNumber: Number.isInteger(seasonNumberRaw) ? seasonNumberRaw : null,
+      episodeNumber,
+      synopsis: synopsis.slice(0, STAGE_INPUT_MAX),
+    });
+    if (out.length >= RESOLVE_EPISODE_MAX) break;
   }
   return out;
 }
@@ -516,6 +577,31 @@ export function sliceSeasonForNeighbor(s) {
   };
 }
 
+// Build the season-number → seasonId lookup the episode-correction passes use
+// to disambiguate a correction that names a season. Only integer-numbered
+// seasons are indexed (a malformed season can't be a resolution target).
+export const seasonIdByNumberOf = (series) => new Map(
+  (series?.seasons || []).filter((s) => Number.isInteger(s?.number)).map((s) => [s.number, s.id]),
+);
+
+// Match the issue an episode-level correction targets. The arc tree numbers
+// episodes series-globally, but when a correction names a season that resolved
+// to a real season id we REQUIRE the issue to be in it — we do NOT fall back to
+// a season-agnostic number match, because if an LLM ever emits a per-season
+// `episodeNumber` a bare-number fallback would silently rewrite the wrong
+// season's issue (e.g. global issue 5 when the model meant season 2 episode 5).
+// Failing safe to no-match (the caller logs it) is the correct outcome for a
+// numbering-scheme mismatch. Only when no season is given (or it didn't resolve)
+// do we match on the globally-unique number alone. Returns the issue or
+// undefined. Shared by applyEpisodeResolutions (arc-resolve) and
+// applyBeatResolutions (beat-continuity).
+export function matchIssueForEpisodeEdit(issues, seasonIdByNumber, edit) {
+  const wantSeasonId = edit.seasonNumber != null ? seasonIdByNumber.get(edit.seasonNumber) : null;
+  return wantSeasonId
+    ? issues.find((i) => i.number === edit.episodeNumber && i.seasonId === wantSeasonId)
+    : issues.find((i) => i.number === edit.episodeNumber);
+}
+
 export async function buildResolveContext(series, findings, preloadedWorld) {
   const ctx = await buildVerifyContext(series, preloadedWorld);
   const structure = recommendStructure(series.issueCountTarget);
@@ -528,6 +614,96 @@ export async function buildResolveContext(series, findings, preloadedWorld) {
     recommendedSeasonCount: structure ? structure.seasons : '',
     recommendedPerSeasonJson: structure ? JSON.stringify(structure.perSeason) : '[]',
   };
+}
+
+// ---------------------------------------------------------------------------
+// Whole-manuscript BEAT-level continuity pass (#1510).
+//
+// verifyArc checks SYNOPSIS depth across the whole arc; verifyVolume checks
+// BEAT depth within ONE volume. The missing altitude was a whole-BOOK beat
+// pass — cross-issue beat defects (an unresolved cliffhanger, a finale that
+// drifts from the arc's intended ending, a promised through-line that never
+// lands, an event staged as "first" in two issues) only surfaced AFTER full
+// scripts existed (the most expensive stage). These builders feed the per-issue
+// beat sheets (idea.output) for the whole series as the corpus — compact enough
+// that the whole book fits a normal window, so no chunking. Leaves carry `beats`
+// where present (via renderVolumeIssue) and fall back to `synopsis`, so a
+// partially-expanded series is still checkable mid-workflow.
+// ---------------------------------------------------------------------------
+
+// Render the season→issue tree with beat-bearing leaves and report how many
+// issues actually carry beats, so the conductor/prompt can tell a real beat
+// corpus from a synopsis-only one. Shared by the verify and resolve contexts.
+async function buildBeatTree(series, preloadedWorld) {
+  const seasons = sanitizeSeasonList(series.seasons || []);
+  const [issues, base, canon] = await Promise.all([
+    listIssues({ seriesId: series.id }),
+    buildArcBaseContext(series, preloadedWorld),
+    getSeriesCanon(series),
+  ]);
+  const tree = groupIssuesBySeasonTree(seasons, issues, {
+    renderLeaf: renderVolumeIssue,
+    seasonFields: (s) => ({
+      number: s.number,
+      title: s.title,
+      logline: s.logline,
+      synopsis: s.synopsis,
+      endingHook: s.endingHook,
+      episodeCountTarget: s.episodeCountTarget,
+      themes: s.themes,
+    }),
+  });
+  // Report how many issues actually carry beats, so the conductor/prompt can
+  // tell a real beat corpus from a synopsis-only one. Counted from the built
+  // tree — every leaf with `.beats` came through renderVolumeIssue's beats branch.
+  const beatBearing = tree.reduce((n, s) => n + s.episodes.filter((e) => e.beats).length, 0);
+  return { base, canon, tree, beatBearing };
+}
+
+export async function buildBeatContinuityContext(series, preloadedWorld) {
+  const { base, canon, tree, beatBearing } = await buildBeatTree(series, preloadedWorld);
+  return {
+    ...base,
+    seasonsTreeJson: JSON.stringify(tree, null, 2),
+    beatBearingCount: beatBearing,
+    existingCharactersJson: JSON.stringify(canon.characters, null, 2),
+    existingPlacesJson: JSON.stringify(canon.places, null, 2),
+    existingObjectsJson: JSON.stringify(canon.objects, null, 2),
+  };
+}
+
+export async function buildBeatContinuityResolveContext(series, findings, preloadedWorld) {
+  const ctx = await buildBeatContinuityContext(series, preloadedWorld);
+  return { ...ctx, findingsJson: JSON.stringify(findings, null, 2) };
+}
+
+// Max beat corrections an auto-resolve pass may apply in one round (mirrors
+// RESOLVE_EPISODE_MAX) so a runaway LLM response can't rewrite every issue's
+// beats in a single convergence step.
+export const RESOLVE_BEAT_MAX = 50;
+
+/**
+ * Shape the beat-continuity resolver's `episodes[]` output — a SPARSE list of
+ * per-issue BEAT rewrites (vs `shapeEpisodeResolutions`'s synopsis rewrites).
+ * Each entry needs an integer `episodeNumber` and non-empty `beats`;
+ * `seasonNumber` is optional disambiguation. Malformed entries are dropped.
+ */
+export function shapeBeatResolutions(rawEpisodes) {
+  if (!Array.isArray(rawEpisodes)) return [];
+  const out = [];
+  for (const raw of rawEpisodes) {
+    const beats = typeof raw?.beats === 'string' ? raw.beats.trim() : '';
+    const episodeNumber = Number(raw?.episodeNumber);
+    if (!beats || !Number.isInteger(episodeNumber)) continue;
+    const seasonNumberRaw = Number(raw?.seasonNumber);
+    out.push({
+      seasonNumber: Number.isInteger(seasonNumberRaw) ? seasonNumberRaw : null,
+      episodeNumber,
+      beats: beats.slice(0, STAGE_INPUT_MAX),
+    });
+    if (out.length >= RESOLVE_BEAT_MAX) break;
+  }
+  return out;
 }
 
 export const RESOLVE_FINDING_MAX = 50;

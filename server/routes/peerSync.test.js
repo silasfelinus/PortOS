@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import { request } from '../lib/testHelper.js';
 import { errorMiddleware } from '../lib/errorHandler.js';
@@ -12,6 +12,9 @@ vi.mock('../services/sharing/peerSync.js', () => ({
   getRecordPayloadForPeer: vi.fn(),
   pullRecordFromPeer: vi.fn(),
   syncNowForPeer: vi.fn(),
+  buildMediaLibraryManifest: vi.fn(),
+  buildCosHistoryManifest: vi.fn(),
+  buildCosTasksPayload: vi.fn(),
   ERR_NOT_FOUND: 'PEER_SYNC_SUBSCRIPTION_NOT_FOUND',
   ERR_VALIDATION: 'PEER_SYNC_SUBSCRIPTION_VALIDATION',
   ERR_SCHEMA_VERSION_AHEAD: 'PEER_SYNC_SCHEMA_VERSION_AHEAD',
@@ -31,6 +34,10 @@ import * as svc from '../services/sharing/peerSync.js';
 import * as integritySvc from '../services/sharing/integrity.js';
 import * as sidecarSvc from '../services/sharing/sidecarSync.js';
 import peerSyncRoutes from './peerSync.js';
+import { PATHS } from '../lib/fileUtils.js';
+import { mkdir, writeFile, rm } from 'fs/promises';
+import { join } from 'path';
+import { tmpdir } from 'os';
 
 const buildApp = () => {
   const app = express();
@@ -131,6 +138,30 @@ describe('peer-sync routes', () => {
       expect(res.status).toBe(200);
       expect(svc.applyIncomingPush).toHaveBeenCalledWith(expect.objectContaining({
         manuscriptReview: expect.objectContaining({ comments: expect.any(Array) }),
+      }));
+    });
+
+    it('accepts a writersRoomWork push that bundles a draftBodyManifest', async () => {
+      // Regression: writersRoomWorkPushSchema is `.strict()`, so without the
+      // draftBodyManifest field (and without the kind in the discriminated
+      // union) the production body-bearing work push 400s at the Zod boundary
+      // before applyIncomingPush ever runs — the feature can't work over the API.
+      svc.applyIncomingPush.mockResolvedValue({ missingAssets: [], reverseSubscriptionCreated: false, ackedDeletesUpTo: 0 });
+      const res = await request(buildApp())
+        .post('/api/peer-sync/push')
+        .send({
+          kind: 'writersRoomWork',
+          record: { id: 'wr-work-1' },
+          assetManifest: [],
+          draftBodyManifest: [
+            { kind: 'writers-room-draft', workId: 'wr-work-1', draftId: 'wr-draft-1', sha256: 'a'.repeat(64) },
+          ],
+          sourceInstanceId: 'peer-a',
+        });
+      expect(res.status).toBe(200);
+      expect(svc.applyIncomingPush).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'writersRoomWork',
+        draftBodyManifest: expect.any(Array),
       }));
     });
 
@@ -485,6 +516,93 @@ describe('peer-sync routes', () => {
         .get('/api/peer-sync/manifest?kind=%20universe%20');
       expect(res.status).toBe(200);
       expect(integritySvc.buildLocalManifest).toHaveBeenCalledWith('universe');
+    });
+  });
+
+  describe('GET /api/peer-sync/library-manifest', () => {
+    it('200 with the standalone media-library manifest (#1566)', async () => {
+      const manifest = {
+        schemaVersion: 1,
+        manifestHash: 'a'.repeat(64),
+        assets: [{ filename: 'x.png', kind: 'image', sha256: 'b'.repeat(64) }],
+      };
+      svc.buildMediaLibraryManifest.mockResolvedValue(manifest);
+
+      const res = await request(buildApp()).get('/api/peer-sync/library-manifest');
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(manifest);
+      expect(svc.buildMediaLibraryManifest).toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /api/peer-sync/cos-history-manifest (#1650)', () => {
+    it('200 with the completed-agent history manifest', async () => {
+      const manifest = {
+        schemaVersion: 1,
+        manifestHash: 'c'.repeat(64),
+        entries: [{ date: '2026-06-20', agentId: 'agent-abc', file: 'metadata.json', sha256: 'd'.repeat(64) }],
+      };
+      svc.buildCosHistoryManifest.mockResolvedValue(manifest);
+      const res = await request(buildApp()).get('/api/peer-sync/cos-history-manifest');
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(manifest);
+      expect(svc.buildCosHistoryManifest).toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /api/peer-sync/cos-tasks (#1712)', () => {
+    it('200 with the live task-list + claim-metadata payload', async () => {
+      const payload = {
+        schemaVersion: 1,
+        listHash: 'e'.repeat(64),
+        tasks: [{ id: 'task-a', taskType: 'user', status: 'pending', priority: 'MEDIUM', description: 'd', metadata: {} }],
+      };
+      svc.buildCosTasksPayload.mockResolvedValue(payload);
+      const res = await request(buildApp()).get('/api/peer-sync/cos-tasks');
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(payload);
+      expect(svc.buildCosTasksPayload).toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /api/peer-sync/cos-agent-archive (#1650)', () => {
+    let tmp;
+    let originalCos;
+    beforeEach(async () => {
+      originalCos = PATHS.cos;
+      tmp = join(tmpdir(), `portos-cos-route-${process.pid}-${Math.random().toString(36).slice(2)}`);
+      PATHS.cos = tmp;
+      await mkdir(join(tmp, 'agents', '2026-06-20', 'agent-abc'), { recursive: true });
+      await writeFile(join(tmp, 'agents', '2026-06-20', 'agent-abc', 'metadata.json'), '{"id":"agent-abc"}');
+    });
+    afterEach(async () => {
+      PATHS.cos = originalCos;
+      await rm(tmp, { recursive: true, force: true });
+    });
+
+    it('streams a valid archive file', async () => {
+      const res = await request(buildApp())
+        .get('/api/peer-sync/cos-agent-archive?date=2026-06-20&agentId=agent-abc&file=metadata.json');
+      expect(res.status).toBe(200);
+      expect(res.text).toBe('{"id":"agent-abc"}');
+    });
+
+    it('400s on a non-allowlisted file', async () => {
+      const res = await request(buildApp())
+        .get('/api/peer-sync/cos-agent-archive?date=2026-06-20&agentId=agent-abc&file=state.json');
+      expect(res.status).toBe(400);
+    });
+
+    it('400s on path-traversal segments (never reaches the FS)', async () => {
+      const res = await request(buildApp())
+        .get('/api/peer-sync/cos-agent-archive?date=..%2F..%2Fetc&agentId=agent-abc&file=metadata.json');
+      expect(res.status).toBe(400);
+    });
+
+    it('404s when the archive file does not exist', async () => {
+      const res = await request(buildApp())
+        .get('/api/peer-sync/cos-agent-archive?date=2026-06-20&agentId=agent-zzz&file=output.txt');
+      expect(res.status).toBe(404);
     });
   });
 

@@ -49,6 +49,17 @@ export const BIBLE_LIMITS = Object.freeze({
   DISLIKES_MAX: 1500,
   MANNERISMS_MAX: 1500,
   RELATIONSHIPS_MAX: 2000,
+  // Structured character-to-character relationship links (#1287). The legacy
+  // prose `relationships` field above stays; `relationshipLinks[]` is additive.
+  // `description` is per-link prose; `opposition` captures a binary-tension
+  // axis (hunter/prey, winner/loser…) the reader watches to see reverse.
+  RELATIONSHIP_TARGET_ID_MAX: 64,
+  RELATIONSHIP_TYPE_MAX: 60,
+  RELATIONSHIP_DESCRIPTION_MAX: 1000,
+  RELATIONSHIP_OPPOSITION_AXIS_MAX: 60,
+  RELATIONSHIP_OPPOSITION_ROLE_MAX: 120,
+  RELATIONSHIP_OPPOSITION_NOTE_MAX: 600,
+  RELATIONSHIP_LINKS_PER_CHARACTER_MAX: 40,
   SKILLS_MAX: 2000,
   // Flexible stats list — open key/value so non-humans aren't forced into
   // human anatomy ("Number of eyes: 8", "Form: spectral vapor", etc).
@@ -90,6 +101,17 @@ export const BIBLE_LIMITS = Object.freeze({
   // Objects
   OBJECT_DESCRIPTION_MAX: 2000,
   SIGNIFICANCE_MAX: 1000,
+  // Structured object↔character attachment links (#1288). The legacy prose
+  // `significance` field above stays; `attachments[]` is additive. Each link
+  // ties an object to ONE character and captures the emotion/significance/origin
+  // of that bond plus a `role` archetype. `characterId` caps match the canon id
+  // format; the prose fields are roomy because writers describe backstory at
+  // length, but tighter than NOTES so a runaway extraction stays bounded.
+  ATTACHMENT_CHARACTER_ID_MAX: 64,
+  ATTACHMENT_EMOTION_MAX: 120,
+  ATTACHMENT_SIGNIFICANCE_MAX: 1000,
+  ATTACHMENT_ORIGIN_MAX: 1000,
+  ATTACHMENTS_PER_OBJECT_MAX: 40,
   // Per-bible cap (universal — protects against runaway extraction)
   ENTRIES_PER_BIBLE_MAX: 200,
   PROMPT_MAX: 2000,
@@ -127,6 +149,32 @@ export const BIBLE_KIND = Object.freeze({
   PLACE: 'place',
   OBJECT: 'object',
 });
+
+// Structured relationship-link taxonomy (#1287). `type` is the dynamic
+// between two characters; `custom` lets the writer name one the list misses
+// (the free-text `description` carries the specifics). `opposition.axis`
+// tags a binary-force tension (hunter/prey, winner/loser…) the reader tracks
+// to see whether the roles ever reverse. Both default to `custom` on an
+// unrecognized value rather than dropping the link, so a legacy/peer payload
+// with a future type still round-trips (its prose description is preserved).
+export const RELATIONSHIP_LINK_TYPES = Object.freeze([
+  'ally', 'antagonist', 'rival', 'mentor', 'love-interest', 'family', 'custom',
+]);
+export const RELATIONSHIP_OPPOSITION_AXES = Object.freeze([
+  'winner/loser', 'smart/dumb', 'hunter/prey', 'predator/prey', 'custom',
+]);
+const RELATIONSHIP_LINK_TYPE_SET = new Set(RELATIONSHIP_LINK_TYPES);
+const RELATIONSHIP_OPPOSITION_AXIS_SET = new Set(RELATIONSHIP_OPPOSITION_AXES);
+
+// Object↔character attachment archetypes (#1288). `role` tags WHAT the object
+// is to the character narratively; `custom` lets the writer name one the list
+// misses (the prose `significance`/`origin` carry the specifics). An
+// unrecognized value coerces to `custom` rather than dropping the link, so a
+// legacy/peer payload carrying a future role still round-trips with its prose.
+export const ATTACHMENT_ROLES = Object.freeze([
+  'talisman', 'macguffin', 'memento', 'tool', 'symbol', 'custom',
+]);
+const ATTACHMENT_ROLE_SET = new Set(ATTACHMENT_ROLES);
 
 // Enums for the location-classification fields on Place canon entries.
 // Mirrors AnyFilm's INT/EXT + time-of-day taxonomy so generated panels and
@@ -204,6 +252,29 @@ const DEFAULT_ID_PREFIX = Object.freeze({
 // series.js, issues.js, etc.) stop redefining the same one-liners.
 export const isStr = (v) => typeof v === 'string';
 export const trimTo = (v, max) => (isStr(v) ? v.trim().slice(0, max) : '');
+
+// Boundary-aware cap for PROSE fields (loglines, synopses, ending hooks). A hard
+// `slice(0, max)` clips mid-word ("...tracing the brand and"), which downstream
+// verify passes flag as "truncated mid-sentence" — and because a resolver then
+// regenerates an over-cap value that gets re-clipped the same way, the
+// verify→resolve loop never converges. When the text fits, it's returned
+// untouched. When it must be clipped, back off to the last sentence terminator
+// (. ! ?) within the budget; if there's no sentence break in the last ~40% of
+// the budget (one run-on sentence), fall back to the last whitespace boundary so
+// the result still ends on a whole word. Never returns more than `max` chars.
+export function trimToClause(v, max) {
+  if (!isStr(v)) return '';
+  const s = v.trim();
+  if (s.length <= max) return s;
+  const window = s.slice(0, max);
+  // Prefer the last sentence terminator, but only if it's not so early that we'd
+  // drop most of the content (keep at least ~60% of the budget).
+  const sentence = Math.max(window.lastIndexOf('. '), window.lastIndexOf('! '), window.lastIndexOf('? '));
+  if (sentence >= Math.floor(max * 0.6)) return window.slice(0, sentence + 1).trim();
+  // No usable sentence break — clip on the last whole word instead of mid-word.
+  const space = window.lastIndexOf(' ');
+  return (space > 0 ? window.slice(0, space) : window).trim();
+}
 
 // Walk a raw array through a per-item sanitizer, dropping rejected entries
 // (falsy return from `sanitizer`) and capping the output at `cap`. Three
@@ -606,6 +677,70 @@ function sanitizeHandGesture(raw) {
   return { id: ensureId(raw.id, 'gesture-'), name, description: trimTo(raw.description, BIBLE_LIMITS.GESTURE_DESC_MAX) };
 }
 
+// Structured relationship link (#1287). Requires a `targetCharacterId` — a
+// link with nothing to point at is meaningless, so a blank target drops the
+// row (matches the name-required pattern in the other list sanitizers). `type`
+// and `opposition.axis` normalize an unrecognized value to `custom` rather
+// than dropping it, so a peer/legacy payload carrying a future enum value
+// still round-trips with its prose intact. `opposition` collapses to absent
+// unless an axis is present, and `locked` persists explicit true/false only.
+function sanitizeOpposition(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const axisRaw = trimTo(raw.axis, BIBLE_LIMITS.RELATIONSHIP_OPPOSITION_AXIS_MAX);
+  if (!axisRaw) return null;
+  const axis = RELATIONSHIP_OPPOSITION_AXIS_SET.has(axisRaw) ? axisRaw : 'custom';
+  return {
+    axis,
+    thisRole: trimTo(raw.thisRole, BIBLE_LIMITS.RELATIONSHIP_OPPOSITION_ROLE_MAX),
+    targetRole: trimTo(raw.targetRole, BIBLE_LIMITS.RELATIONSHIP_OPPOSITION_ROLE_MAX),
+    note: trimTo(raw.note, BIBLE_LIMITS.RELATIONSHIP_OPPOSITION_NOTE_MAX),
+  };
+}
+
+function sanitizeRelationshipLink(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const targetCharacterId = trimTo(raw.targetCharacterId, BIBLE_LIMITS.RELATIONSHIP_TARGET_ID_MAX);
+  if (!targetCharacterId) return null;
+  const typeRaw = trimTo(raw.type, BIBLE_LIMITS.RELATIONSHIP_TYPE_MAX);
+  const type = RELATIONSHIP_LINK_TYPE_SET.has(typeRaw) ? typeRaw : 'custom';
+  const out = {
+    id: ensureId(raw.id, 'rel-'),
+    targetCharacterId,
+    type,
+    description: trimTo(raw.description, BIBLE_LIMITS.RELATIONSHIP_DESCRIPTION_MAX),
+  };
+  const opposition = sanitizeOpposition(raw.opposition);
+  if (opposition) out.opposition = opposition;
+  if (raw.locked === true) out.locked = true;
+  else if (raw.locked === false) out.locked = false;
+  return out;
+}
+
+// Structured object↔character attachment (#1288). Requires a `characterId` — an
+// attachment with nothing to bind to is meaningless, so a blank target drops the
+// row (matches the targetCharacterId-required pattern in sanitizeRelationshipLink).
+// `role` normalizes an unrecognized value to `custom` rather than dropping it, so
+// a peer/legacy payload carrying a future role still round-trips with its prose
+// (emotion/significance/origin) intact. `locked` persists explicit true/false only.
+function sanitizeAttachment(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const characterId = trimTo(raw.characterId, BIBLE_LIMITS.ATTACHMENT_CHARACTER_ID_MAX);
+  if (!characterId) return null;
+  const roleRaw = trimTo(raw.role, 60);
+  const role = ATTACHMENT_ROLE_SET.has(roleRaw) ? roleRaw : 'custom';
+  const out = {
+    id: ensureId(raw.id, 'att-'),
+    characterId,
+    emotion: trimTo(raw.emotion, BIBLE_LIMITS.ATTACHMENT_EMOTION_MAX),
+    significance: trimTo(raw.significance, BIBLE_LIMITS.ATTACHMENT_SIGNIFICANCE_MAX),
+    origin: trimTo(raw.origin, BIBLE_LIMITS.ATTACHMENT_ORIGIN_MAX),
+    role,
+  };
+  if (raw.locked === true) out.locked = true;
+  else if (raw.locked === false) out.locked = false;
+  return out;
+}
+
 // Shared canon extras applied to every kind. Persists explicit `locked: true`
 // AND `locked: false` so a Universe-Builder caller can flip the bit and have
 // the change survive round-trips. Missing `locked` still collapses to absent
@@ -675,6 +810,14 @@ export function sanitizeCharacter(raw, { idPrefix = DEFAULT_ID_PREFIX.character,
     dislikes: trimTo(raw.dislikes, BIBLE_LIMITS.DISLIKES_MAX),
     mannerisms: trimTo(raw.mannerisms, BIBLE_LIMITS.MANNERISMS_MAX),
     relationships: trimTo(raw.relationships, BIBLE_LIMITS.RELATIONSHIPS_MAX),
+    // Structured character-to-character links + opposing-force tags (#1287).
+    // Additive to the legacy prose `relationships` field above. Empty array
+    // stays the legacy shape — every existing character keeps round-tripping.
+    relationshipLinks: sanitizeListWith(
+      raw.relationshipLinks,
+      sanitizeRelationshipLink,
+      BIBLE_LIMITS.RELATIONSHIP_LINKS_PER_CHARACTER_MAX,
+    ),
     skills: trimTo(raw.skills, BIBLE_LIMITS.SKILLS_MAX),
     notes: trimTo(raw.notes, BIBLE_LIMITS.NOTES_MAX),
     // Flexible stats list. Open key/value so ghosts/spiders/clouds aren't
@@ -769,6 +912,14 @@ export function sanitizeObject(raw, { idPrefix = DEFAULT_ID_PREFIX.object, prese
     aliases: cleanStringArray(raw.aliases, BIBLE_LIMITS.ALIAS_MAX, BIBLE_LIMITS.ALIASES_PER_ENTRY_MAX),
     description: trimTo(raw.description, BIBLE_LIMITS.OBJECT_DESCRIPTION_MAX),
     significance: trimTo(raw.significance, BIBLE_LIMITS.SIGNIFICANCE_MAX),
+    // Structured object↔character attachment links (#1288). Additive to the
+    // legacy prose `significance` field above. Empty array stays the legacy
+    // shape — every existing object keeps round-tripping unchanged.
+    attachments: sanitizeListWith(
+      raw.attachments,
+      sanitizeAttachment,
+      BIBLE_LIMITS.ATTACHMENTS_PER_OBJECT_MAX,
+    ),
     notes: trimTo(raw.notes, BIBLE_LIMITS.NOTES_MAX),
     imageRefs,
     // A5: canonical prop / hero-object reference render.

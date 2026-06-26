@@ -99,6 +99,73 @@ describe('pipeline series service', () => {
     expect(updated.updatedAt >= s.updatedAt).toBe(true);
   });
 
+  it('defaults fact-checking fields off (#1588) and round-trips an opt-in + reference', async () => {
+    const off = await svc.createSeries({ name: 'Fantasy' });
+    expect(off.factCritical).toBe(false);
+    expect(off.factReference).toBe('');
+
+    const on = await svc.createSeries({
+      name: 'Grounded',
+      factCritical: true,
+      factReference: 'Paris is the capital of France.',
+    });
+    expect(on.factCritical).toBe(true);
+    expect(on.factReference).toBe('Paris is the capital of France.');
+  });
+
+  it('updateSeries clears the fact reference with "" but preserves it on omission (#1588)', async () => {
+    const s = await svc.createSeries({ name: 'Grounded', factCritical: true, factReference: 'Real facts.' });
+    // Omitting the field preserves both.
+    const kept = await svc.updateSeries(s.id, { logline: 'L2' });
+    expect(kept.factCritical).toBe(true);
+    expect(kept.factReference).toBe('Real facts.');
+    // Explicit "" clears the reference; toggling factCritical off sticks.
+    const cleared = await svc.updateSeries(s.id, { factCritical: false, factReference: '' });
+    expect(cleared.factCritical).toBe(false);
+    expect(cleared.factReference).toBe('');
+  });
+
+  it('defaults editorialCheckConfig to {} and round-trips per-series overrides (#1591)', async () => {
+    const plain = await svc.createSeries({ name: 'Plain' });
+    // Always present (empty) — like factReference/styleGuide — so a clear can
+    // propagate between v8 peers and is protected as an additive field on sync.
+    expect(plain.editorialCheckConfig).toEqual({});
+
+    const tuned = await svc.createSeries({
+      name: 'YA Graphic Novel',
+      editorialCheckConfig: { 'comic.lettering-density': { maxWordsPerBalloon: 18, x: true } },
+    });
+    expect(tuned.editorialCheckConfig).toEqual({ 'comic.lettering-density': { maxWordsPerBalloon: 18, x: true } });
+  });
+
+  it('sanitizes editorialCheckConfig: drops empty/non-object overrides and non-primitive leaves (#1591)', async () => {
+    const s = await svc.createSeries({
+      name: 'Messy',
+      editorialCheckConfig: {
+        'comic.lettering-density': { maxWordsPerBalloon: 30, bad: null, nested: { a: 1 }, arr: [1] },
+        'empty.check': {},          // empty override → dropped
+        'bogus.check': 'not-an-object', // non-object override → dropped
+      },
+    });
+    expect(s.editorialCheckConfig).toEqual({ 'comic.lettering-density': { maxWordsPerBalloon: 30 } });
+  });
+
+  it('updateSeries replaces overrides wholesale and clears them with {}/null (#1591)', async () => {
+    const s = await svc.createSeries({
+      name: 'Tunable',
+      editorialCheckConfig: { 'comic.lettering-density': { maxWordsPerBalloon: 10 } },
+    });
+    // Omission preserves.
+    const kept = await svc.updateSeries(s.id, { logline: 'L2' });
+    expect(kept.editorialCheckConfig).toEqual({ 'comic.lettering-density': { maxWordsPerBalloon: 10 } });
+    // Wholesale replace.
+    const replaced = await svc.updateSeries(s.id, { editorialCheckConfig: { 'comic.panel-rhythm': { maxConsecutiveSplash: 1 } } });
+    expect(replaced.editorialCheckConfig).toEqual({ 'comic.panel-rhythm': { maxConsecutiveSplash: 1 } });
+    // {} clears all overrides (sanitizer keeps the always-present empty map).
+    const cleared = await svc.updateSeries(s.id, { editorialCheckConfig: {} });
+    expect(cleared.editorialCheckConfig).toEqual({});
+  });
+
   it('updateSeries throws ERR_NOT_FOUND for unknown id', async () => {
     await expect(svc.updateSeries('ser-nope', { name: 'x' })).rejects.toMatchObject({ code: svc.ERR_NOT_FOUND });
   });
@@ -513,6 +580,199 @@ describe('pipeline series service', () => {
     it('arc is null and readerMap absent on a fresh series with no arc', async () => {
       const s = await svc.createSeries({ name: 'X' });
       expect(s.arc).toBe(null);
+    });
+  });
+
+  describe('characterArcs (#1293)', () => {
+    it('defaults to [] on a fresh series', async () => {
+      const s = await svc.createSeries({ name: 'X' });
+      expect(s.characterArcs).toEqual([]);
+    });
+
+    it('persists per-character arcs + transitions through an update and re-read', async () => {
+      const s = await svc.createSeries({ name: 'X' });
+      const updated = await svc.updateSeries(s.id, {
+        characterArcs: [
+          {
+            characterName: 'Mara',
+            want: 'revenge',
+            need: 'to forgive',
+            transitions: [{ kind: 'point-of-no-return', label: 'burns the bridge', atIssue: 4 }],
+          },
+        ],
+      });
+      expect(updated.characterArcs).toHaveLength(1);
+      expect(updated.characterArcs[0]).toMatchObject({ characterName: 'Mara', want: 'revenge' });
+      expect(updated.characterArcs[0].transitions[0]).toMatchObject({ kind: 'point-of-no-return', atIssue: 4 });
+      const fresh = await svc.getSeries(s.id);
+      expect(fresh.characterArcs[0].transitions[0].label).toBe('burns the bridge');
+    });
+
+    it('drops empty arcs and clears with an empty array', async () => {
+      const s = await svc.createSeries({
+        name: 'X',
+        characterArcs: [{ characterName: 'A', want: 'w' }, { characterName: 'Ghost' }],
+      });
+      expect(s.characterArcs).toHaveLength(1);
+      const cleared = await svc.updateSeries(s.id, { characterArcs: [] });
+      expect(cleared.characterArcs).toEqual([]);
+    });
+  });
+
+  // Issue #1361 — a behind/legacy peer pushes a newer series payload that simply
+  // OMITS an additive content field. sanitizeSeries flattens that absence to the
+  // same null/[]/'' as a deliberate clear, so without the absent-vs-clear guard
+  // LWW would erase the locally-authored value. An explicit null/empty from an
+  // up-to-date peer must still apply as an intentional clear.
+  describe('mergeSeriesFromSync — additive-field preservation (behind-sender)', () => {
+    const NEWER = '2999-01-01T00:00:00.000Z';
+
+    it('preserves styleNotes/styleGuide/seasons when the remote omits the keys', async () => {
+      const s = await svc.createSeries({
+        name: 'Additive',
+        styleNotes: 'moebius linework',
+        styleGuide: { tense: 'past', povPerson: 'first' },
+        seasons: [{ number: 1, title: 'Season One' }],
+      });
+      expect(s.styleGuide).not.toBeNull();
+      expect(s.seasons).toHaveLength(1);
+      // Behind-sender payload — newer updatedAt, but no styleNotes/styleGuide/
+      // seasons keys at all.
+      const behind = { id: s.id, name: 'Additive (peer edit)', updatedAt: NEWER };
+      const res = await svc.mergeSeriesFromSync([behind]);
+      expect(res.applied).toBe(true);
+      const after = await svc.getSeries(s.id);
+      expect(after.name).toBe('Additive (peer edit)'); // remote edit applied
+      expect(after.styleNotes).toBe('moebius linework'); // …additive fields kept
+      expect(after.styleGuide.tense).toBe('past');
+      expect(after.seasons).toHaveLength(1);
+      expect(after.seasons[0].title).toBe('Season One');
+    });
+
+    it('preserves editorialCheckConfig when a behind-sender omits the key, applies an explicit clear (#1591)', async () => {
+      const s = await svc.createSeries({
+        name: 'TunedSeries',
+        editorialCheckConfig: { 'comic.lettering-density': { maxWordsPerBalloon: 18 } },
+      });
+      expect(s.editorialCheckConfig).toEqual({ 'comic.lettering-density': { maxWordsPerBalloon: 18 } });
+      // Behind-sender (older peer) omits the key → local overrides preserved.
+      const behind = { id: s.id, name: 'TunedSeries (peer edit)', updatedAt: NEWER };
+      await svc.mergeSeriesFromSync([behind]);
+      const kept = await svc.getSeries(s.id);
+      expect(kept.name).toBe('TunedSeries (peer edit)');
+      expect(kept.editorialCheckConfig).toEqual({ 'comic.lettering-density': { maxWordsPerBalloon: 18 } });
+      // Up-to-date peer present-but-empty map → the clear applies (present key wins).
+      const clear = { id: s.id, name: 'TunedSeries', editorialCheckConfig: {}, updatedAt: '2999-06-01T00:00:00.000Z' };
+      await svc.mergeSeriesFromSync([clear]);
+      const cleared = await svc.getSeries(s.id);
+      expect(cleared.editorialCheckConfig).toEqual({});
+    });
+
+    it('preserves arc (incl. readerMap + tickingClock) when the remote omits arc', async () => {
+      const s = await svc.createSeries({
+        name: 'ArcKeep',
+        arc: {
+          logline: 'spine',
+          readerMap: { hooks: [{ label: 'who?' }] },
+          tickingClock: { enabled: true, label: 'the eclipse' },
+        },
+      });
+      expect(s.arc.readerMap.hooks).toHaveLength(1);
+      expect(s.arc.tickingClock.enabled).toBe(true);
+      const behind = { id: s.id, name: 'ArcKeep (peer edit)', updatedAt: NEWER };
+      await svc.mergeSeriesFromSync([behind]);
+      const after = await svc.getSeries(s.id);
+      expect(after.arc).not.toBeNull();
+      expect(after.arc.logline).toBe('spine');
+      expect(after.arc.readerMap.hooks[0].label).toBe('who?');
+      expect(after.arc.tickingClock.label).toBe('the eclipse');
+    });
+
+    it('preserves nested readerMap/tickingClock when the remote sends arc but omits those sub-keys (legacy peer)', async () => {
+      const s = await svc.createSeries({
+        name: 'NestedKeep',
+        arc: {
+          logline: 'old spine',
+          readerMap: { hooks: [{ label: 'mystery' }] },
+          tickingClock: { enabled: true, label: 'countdown' },
+        },
+      });
+      // Legacy peer predates readerMap/tickingClock: it still authors `arc`, just
+      // without those sub-fields. The new arc.logline applies; the sub-fields are
+      // preserved.
+      const behind = { id: s.id, name: 'NestedKeep', arc: { logline: 'new spine' }, updatedAt: NEWER };
+      await svc.mergeSeriesFromSync([behind]);
+      const after = await svc.getSeries(s.id);
+      expect(after.arc.logline).toBe('new spine'); // remote arc edit applied
+      expect(after.arc.readerMap.hooks[0].label).toBe('mystery'); // sub-fields kept
+      expect(after.arc.tickingClock.label).toBe('countdown');
+    });
+
+    it('applies an explicit null/empty clear from an up-to-date peer (present key wins)', async () => {
+      const s = await svc.createSeries({
+        name: 'ClearMe',
+        styleNotes: 'to be cleared',
+        styleGuide: { tense: 'past' },
+        arc: { logline: 'spine', readerMap: { hooks: [{ label: 'keep?' }] } },
+      });
+      // Up-to-date peer intentionally clears: keys present, values empty/null.
+      const clear = {
+        id: s.id,
+        name: 'ClearMe',
+        styleNotes: '',
+        styleGuide: null,
+        arc: { logline: 'spine', readerMap: null },
+        updatedAt: NEWER,
+      };
+      await svc.mergeSeriesFromSync([clear]);
+      const after = await svc.getSeries(s.id);
+      expect(after.styleNotes).toBe('');     // intentional clear honored
+      expect(after.styleGuide).toBeNull();
+      expect(after.arc.readerMap).toBeNull(); // nested intentional clear honored
+      expect(after.arc.logline).toBe('spine');
+    });
+
+    it('does not resurrect content onto an inbound tombstone', async () => {
+      const s = await svc.createSeries({ name: 'Doomed', styleNotes: 'doomed notes' });
+      const tombstone = { id: s.id, name: 'Doomed', deleted: true, deletedAt: NEWER, updatedAt: NEWER };
+      await svc.mergeSeriesFromSync([tombstone]);
+      const after = await svc.getSeries(s.id, { includeDeleted: true });
+      expect(after.deleted).toBe(true);
+      expect(after.styleNotes).toBe(''); // tombstone stays clean, no resurrection
+    });
+  });
+
+  describe('sanitizeAutopilot healthBreakdown (#1579)', () => {
+    it('persists a well-formed pause breakdown, bounding rows and coercing counts', () => {
+      const a = svc.sanitizeAutopilot({
+        status: 'paused',
+        healthBreakdown: {
+          score: 72,
+          open: 6,
+          topChecks: [
+            { checkId: 'continuity', count: 3 },
+            { checkId: 'naming', count: 1.0 },
+            { checkId: 42, count: 1 }, // non-string checkId → dropped
+          ],
+          topIssues: [
+            { issueNumber: 3, open: 5 },
+            { issueNumber: null, open: 2 }, // series-scoped bucket kept
+            { open: 'x' }, // non-finite open → dropped
+          ],
+        },
+      });
+      expect(a.healthBreakdown).toEqual({
+        score: 72,
+        open: 6,
+        topChecks: [{ checkId: 'continuity', count: 3 }, { checkId: 'naming', count: 1 }],
+        topIssues: [{ issueNumber: 3, open: 5 }, { issueNumber: null, open: 2 }],
+      });
+    });
+
+    it('drops a malformed/absent breakdown to null (non-health pauses carry none)', () => {
+      expect(svc.sanitizeAutopilot({ status: 'paused' }).healthBreakdown).toBeNull();
+      expect(svc.sanitizeAutopilot({ status: 'paused', healthBreakdown: 'nope' }).healthBreakdown).toBeNull();
+      expect(svc.sanitizeAutopilot({ status: 'paused', healthBreakdown: [] }).healthBreakdown).toBeNull();
     });
   });
 });

@@ -37,7 +37,9 @@
 
 import { join } from 'path';
 import { existsSync } from 'fs';
+import { readdir, stat } from 'fs/promises';
 import { EventEmitter } from 'events';
+import { createHash } from 'crypto';
 import { PATHS, atomicWrite, readJSONFile, ensureDir, sha256File } from '../../lib/fileUtils.js';
 import { isStr } from '../../lib/storyBible.js';
 import { isPlainObject } from '../../lib/objects.js';
@@ -60,8 +62,8 @@ import {
   formatVersionGap,
   getPortosVersion,
 } from '../../lib/schemaVersions.js';
-import { getInstanceId, getPeers, UNKNOWN_INSTANCE_ID } from '../instances.js';
-import { peerSyncPushSchema } from '../../lib/validation.js';
+import { getInstanceId, getPeers, enqueueReciprocalSync, UNKNOWN_INSTANCE_ID } from '../instances.js';
+import { peerSyncPushSchema, peerLibraryManifestSchema, peerCosHistoryManifestSchema, peerCosTasksSchema, COS_ARCHIVE_DATE_RE, COS_AGENT_ID_RE, COS_ARCHIVE_FILES } from '../../lib/validation.js';
 import { instanceEvents } from '../instanceEvents.js';
 import { getUniverse, mergeUniversesFromSync } from '../universeBuilder.js';
 import { getSeries, mergeSeriesFromSync } from '../pipeline/series.js';
@@ -80,12 +82,58 @@ import {
   headshotImageFilename,
 } from '../authors/index.js';
 import {
+  getArtist,
+  listArtists,
+  mergeArtistsFromSync,
+  portraitImageFilename,
+} from '../artists/index.js';
+import {
+  getAlbum,
+  listAlbums,
+  mergeAlbumsFromSync,
+  coverImageFilename,
+} from '../albums/index.js';
+import {
+  getTrack,
+  listTracks,
+  mergeTracksFromSync,
+  trackAudioFilename,
+} from '../tracks/index.js';
+import {
+  getProject,
+  listProjects,
+  mergeProjectsFromSync,
+  startingImageFilename,
+} from '../creativeDirector/local.js';
+import {
+  getBoard,
+  listBoards,
+  mergeBoardsFromSync,
+  imageUrlToAppAsset,
+} from '../moodBoard/index.js';
+import {
+  getWorkForSync,
+  listWorksForSync,
+  mergeWorksFromSync,
+  buildWorkBodyManifest,
+  diffWorkBodyManifest,
+  getFolderForSync,
+  listFoldersForSync,
+  mergeFoldersFromSync,
+  getExerciseForSync,
+  listExercisesForSync,
+  mergeExercisesFromSync,
+} from '../writersRoom/sync.js';
+import { WRITERS_ROOM_DRAFT_ASSET_KIND } from '../writersRoom/syncLogic.js';
+import { WORK_ID_RE, DRAFT_ID_RE, wrWorkDir, wrDraftPath } from '../writersRoom/_shared.js';
+import { parseKey } from '../../lib/mediaItemKey.js';
+import {
   initCursor,
   ackDeletesUpTo,
   removeCursor as removeTombstoneCursor,
 } from './peerTombstoneCursors.js';
 
-export const PEER_SUBSCRIBABLE_KINDS = Object.freeze(['universe', 'series', 'mediaCollection', 'author']);
+export const PEER_SUBSCRIBABLE_KINDS = Object.freeze(['universe', 'series', 'mediaCollection', 'author', 'artist', 'album', 'track', 'creativeDirectorProject', 'moodBoard', 'writersRoomWork', 'writersRoomFolder', 'writersRoomExercise']);
 
 /**
  * Cross-cutting event bus for the peer-sync receiver. The asset-pull worker
@@ -359,6 +407,14 @@ const KIND_TO_CATEGORY = Object.freeze({
   series: 'pipeline',
   mediaCollection: 'mediaCollections',
   author: 'authors',
+  artist: 'artists',
+  album: 'albums',
+  track: 'tracks',
+  creativeDirectorProject: 'creativeDirectorProjects',
+  moodBoard: 'moodBoards',
+  writersRoomWork: 'writersRoomWorks',
+  writersRoomFolder: 'writersRoomFolders',
+  writersRoomExercise: 'writersRoomExercises',
 });
 
 function peerAllowsOutbound(peer) {
@@ -378,6 +434,12 @@ function peerAllowsOutbound(peer) {
 function peerHasCategory(peer, recordKind) {
   const cat = KIND_TO_CATEGORY[recordKind];
   if (!cat) return false;
+  // A full-sync ("mirror everything") peer implies every current and future
+  // category on — so a newly added subscribable kind is covered with no
+  // per-peer change. This is what makes the back-subscribe sweep, the
+  // peer:online convergence, and auto-subscribe-on-create all fan a full-sync
+  // peer's mirror without enumerating categories by hand.
+  if (peer?.fullSync === true) return true;
   const cats = peer?.syncCategories;
   return !!(cats && cats[cat] === true);
 }
@@ -425,17 +487,15 @@ export async function autoSubscribeRecordToAllPeers(recordKind, recordId) {
  * Dynamic imports for the listers avoid a static cycle (peerSync already
  * imports merge entry points from universeBuilder / pipeline.series).
  */
-export async function autoSubscribePeerToAllRecords(peerId, recordKind) {
-  if (!isNonEmptyStr(peerId) || !PEER_SUBSCRIBABLE_KINDS.includes(recordKind)) return [];
-  // Re-check the peer is enabled + outbound-capable + still has the category
-  // turned on. The caller (instances.updatePeer) already saw the false→true
-  // flip inside withData, but this helper is also reachable from other
-  // backfill paths and we don't want to push to an inbound-only peer just
-  // because the category bit was set. Snapshot read is good enough — peer
-  // edits are infrequent compared to subscription pushes.
-  const peers = await getPeers().catch(() => []);
-  const peer = peers.find(p => p.instanceId === peerId);
-  if (!peer || !peerAllowsOutbound(peer) || !peerHasCategory(peer, recordKind)) return [];
+/**
+ * List the local, non-deleted, non-ephemeral records of a subscribable kind —
+ * the candidate set for both the back-subscribe sweep and full-sync coverage
+ * diffing. Ephemeral records are dropped because they can never push (the wire
+ * sanitizer short-circuits them) and a sub for one would leave an orphan row.
+ * Universe/series listers are dynamic-imported to avoid a static cycle
+ * (peerSync already imports their merge entry points).
+ */
+async function listRecordsForKind(recordKind) {
   let records = [];
   if (recordKind === 'universe') {
     const { listUniverses } = await import('../universeBuilder.js');
@@ -447,12 +507,46 @@ export async function autoSubscribePeerToAllRecords(peerId, recordKind) {
     records = await listCollections({ includeDeleted: false }).catch(() => []);
   } else if (recordKind === 'author') {
     records = await listAuthors({ includeDeleted: false }).catch(() => []);
+  } else if (recordKind === 'artist') {
+    records = await listArtists({ includeDeleted: false }).catch(() => []);
+  } else if (recordKind === 'album') {
+    records = await listAlbums({ includeDeleted: false }).catch(() => []);
+  } else if (recordKind === 'track') {
+    records = await listTracks({ includeDeleted: false }).catch(() => []);
+  } else if (recordKind === 'creativeDirectorProject') {
+    records = await listProjects({ includeDeleted: false }).catch(() => []);
+  } else if (recordKind === 'moodBoard') {
+    records = await listBoards({ includeDeleted: false }).catch(() => []);
+  } else if (recordKind === 'writersRoomWork') {
+    // Live works as { id, updatedAt } (full-sync coverage compares updatedAt to
+    // detect a stale confirmed push; bare {id} stubs would report a changed
+    // manuscript as fully mirrored). Without this branch, enabling the
+    // writersRoomWorks category (or full-sync) would backfill nothing.
+    records = await listWorksForSync().catch(() => []);
+  } else if (recordKind === 'writersRoomFolder') {
+    // Live folders as { id, updatedAt } (#1645) — same coverage-compare reason
+    // as works. Body-less, so no asset/body manifest backfill.
+    records = await listFoldersForSync().catch(() => []);
+  } else if (recordKind === 'writersRoomExercise') {
+    // Live exercises as { id, updatedAt } (#1645). updatedAt is derived from
+    // finishedAt ?? startedAt in the facade so coverage keys on the wire value.
+    records = await listExercisesForSync().catch(() => []);
   }
-  // Drop ephemeral records before the set-difference / sub creation. The wire
-  // sanitizer would short-circuit any push anyway, but creating a sub that
-  // can never push leaves an orphan row in peer_subscriptions.json that
-  // confuses unsubscribe-all / tombstone-cursor lifecycle assumptions.
-  records = records.filter(r => r?.ephemeral !== true);
+  return records.filter(r => r?.ephemeral !== true && isNonEmptyStr(r?.id));
+}
+
+export async function autoSubscribePeerToAllRecords(peerId, recordKind) {
+  if (!isNonEmptyStr(peerId) || !PEER_SUBSCRIBABLE_KINDS.includes(recordKind)) return [];
+  // Re-check the peer is enabled + outbound-capable + still has the category
+  // turned on. The caller (instances.updatePeer) already saw the false→true
+  // flip inside withData, but this helper is also reachable from other
+  // backfill paths and we don't want to push to an inbound-only peer just
+  // because the category bit was set. Snapshot read is good enough — peer
+  // edits are infrequent compared to subscription pushes.
+  const peers = await getPeers().catch(() => []);
+  const peer = peers.find(p => p.instanceId === peerId);
+  if (!peer || !peerAllowsOutbound(peer) || !peerHasCategory(peer, recordKind)) return [];
+  const records = await listRecordsForKind(recordKind);
   if (records.length === 0) return [];
   // Compute the set difference up front: which local records aren't yet
   // subscribed to this peer? The peer:online convergence path fires this
@@ -494,6 +588,57 @@ export async function autoSubscribePeerToAllRecords(peerId, recordKind) {
     console.log(`🔗 peerSync: backfill-subscribed ${created.length} ${recordKind} record(s) → ${peerId}`);
   }
   return created;
+}
+
+/**
+ * Real coverage diff for a (full-sync) peer: of every local subscribable record,
+ * how many have a CONFIRMED-delivered subscription to this peer? Backs the
+ * Instances UI "fully mirrored ✓ / N pending" indicator.
+ *
+ * Coverage is computed by diffing actual record IDs against subscriptions whose
+ * `lastConfirmedPushedAt` is set — NOT off the BIGSERIAL push cursors (which are
+ * sequence numbers, not row counts, and would misreport coverage). A record is
+ * "pending" when it has no subscription to this peer OR its subscription hasn't
+ * been confirmed-delivered yet. Returns per-kind breakdown plus totals, and
+ * `fullyMirrored` (pending === 0).
+ */
+export async function getFullSyncCoverageForPeer(peerId) {
+  const empty = { total: 0, confirmed: 0, pending: 0, fullyMirrored: true, byKind: {} };
+  if (!isNonEmptyStr(peerId)) return empty;
+  // Each kind's record list + subscription list are independent I/O — fetch all
+  // kinds (and the two lists within a kind) concurrently.
+  const perKind = await Promise.all(PEER_SUBSCRIBABLE_KINDS.map(async (kind) => {
+    const [records, subs] = await Promise.all([
+      listRecordsForKind(kind).catch(() => []),
+      listPeerSubscriptions({ peerId, recordKind: kind }).catch(() => []),
+    ]);
+    // Map each subscribed record to its confirmed-delivery water-mark (ms epoch).
+    const confirmedAtById = new Map(subs.filter(s => s.lastConfirmedPushedAt).map(s => [s.recordId, s.lastConfirmedPushedAt]));
+    // A record counts as mirrored only when a confirmed push covers its CURRENT
+    // version — the confirm happened at/after the record's last edit. A record
+    // edited after its last confirmed push (peer offline / schema-blocked since)
+    // has stale content on the peer, so it's pending, not mirrored. A created-
+    // but-never-pushed sub (no water-mark) is pending too.
+    const kindTotal = records.length;
+    const kindConfirmed = records.filter((r) => {
+      const confirmedAt = confirmedAtById.get(r.id);
+      if (!confirmedAt) return false;
+      const updatedAt = Date.parse(r.updatedAt);
+      // No parseable updatedAt → can't prove staleness; trust the confirmation.
+      return !Number.isFinite(updatedAt) || confirmedAt >= updatedAt;
+    }).length;
+    return { kind, total: kindTotal, confirmed: kindConfirmed, pending: kindTotal - kindConfirmed };
+  }));
+  const byKind = {};
+  let total = 0;
+  let confirmed = 0;
+  for (const k of perKind) {
+    byKind[k.kind] = { total: k.total, confirmed: k.confirmed, pending: k.pending };
+    total += k.total;
+    confirmed += k.confirmed;
+  }
+  const pending = total - confirmed;
+  return { total, confirmed, pending, fullyMirrored: pending === 0, byKind };
 }
 
 /**
@@ -685,6 +830,11 @@ function summarizeAssetManifest(manifest) {
 async function buildIntegrityAssetManifest(kind, record) {
   if (kind === 'mediaCollection') return buildCollectionAssetManifest(record);
   if (kind === 'author') return buildAuthorAssetManifest(record);
+  if (kind === 'artist') return buildArtistAssetManifest(record);
+  if (kind === 'album') return buildAlbumAssetManifest(record);
+  if (kind === 'track') return buildTrackAssetManifest(record);
+  if (kind === 'creativeDirectorProject') return buildProjectAssetManifest(record);
+  if (kind === 'moodBoard') return buildBoardAssetManifest(record);
   if (kind === 'series') {
     const childIssues = await listIssues({ seriesId: record?.id, includeDeleted: true }).catch(() => []);
     const manifestIssues = childIssues.filter(
@@ -846,6 +996,8 @@ function directoryForAssetKind(kind) {
   if (kind === 'image') return PATHS.images;
   if (kind === 'image-ref') return PATHS.imageRefs;
   if (kind === 'video') return PATHS.videos;
+  if (kind === 'music') return PATHS.music;
+  if (kind === 'audio') return PATHS.audio; // #1566 standalone media-library sweep
   return null;
 }
 
@@ -888,6 +1040,38 @@ async function isSubscriptionRecordTombstone(sub) {
   }
   if (sub.recordKind === 'author') {
     const record = await getAuthor(sub.recordId, { includeDeleted: true }).catch(() => null);
+    return record?.deleted === true;
+  }
+  if (sub.recordKind === 'artist') {
+    const record = await getArtist(sub.recordId, { includeDeleted: true }).catch(() => null);
+    return record?.deleted === true;
+  }
+  if (sub.recordKind === 'album') {
+    const record = await getAlbum(sub.recordId, { includeDeleted: true }).catch(() => null);
+    return record?.deleted === true;
+  }
+  if (sub.recordKind === 'track') {
+    const record = await getTrack(sub.recordId, { includeDeleted: true }).catch(() => null);
+    return record?.deleted === true;
+  }
+  if (sub.recordKind === 'creativeDirectorProject') {
+    const record = await getProject(sub.recordId, { includeDeleted: true }).catch(() => null);
+    return record?.deleted === true;
+  }
+  if (sub.recordKind === 'moodBoard') {
+    const record = await getBoard(sub.recordId, { includeDeleted: true }).catch(() => null);
+    return record?.deleted === true;
+  }
+  if (sub.recordKind === 'writersRoomWork') {
+    const record = await getWorkForSync(sub.recordId).catch(() => null);
+    return record?.deleted === true;
+  }
+  if (sub.recordKind === 'writersRoomFolder') {
+    const record = await getFolderForSync(sub.recordId).catch(() => null);
+    return record?.deleted === true;
+  }
+  if (sub.recordKind === 'writersRoomExercise') {
+    const record = await getExerciseForSync(sub.recordId).catch(() => null);
     return record?.deleted === true;
   }
   return false;
@@ -951,7 +1135,9 @@ export async function pushRecordToPeer(sub, options = {}) {
     issues: payload.issues ?? null,
     linkedCollection: payload.linkedCollection ?? null,
     manuscriptReview: payload.manuscriptReview ?? null,
+    reverseOutline: payload.reverseOutline ?? null,
     assetManifest: payload.assetManifest ?? [],
+    draftBodyManifest: payload.draftBodyManifest ?? [],
   });
   if (sub.lastPushedHash && sub.lastPushedHash === hash) {
     return { pushed: false, reason: 'unchanged', hash };
@@ -983,6 +1169,10 @@ export async function pushRecordToPeer(sub, options = {}) {
   // review once that peer upgrades. Withhold the hash (like reviewSyncPending)
   // so the next cycle re-sends.
   let reviewStrippedForLegacyPeer = false;
+  // Same as reviewStrippedForLegacyPeer, for the bundled reverse-outline doc —
+  // a pre-#1348 peer's strict series schema rejects the `reverseOutline` key, so
+  // the retry strips it and we withhold the hash to re-send once it upgrades.
+  let outlineStrippedForLegacyPeer = false;
   // MIXED-VERSION COMPAT: an older receiver's push schema is still `.strict()`
   // without a `portosMeta` field, so it 400-rejects our envelope at Zod
   // validation BEFORE its schema-version gate code (which doesn't exist on
@@ -1005,23 +1195,54 @@ export async function pushRecordToPeer(sub, options = {}) {
   // supports `portosMeta` but not `catalogBundle`/`manuscriptReview` keeps its
   // version-gate handshake. Zod `.strict()` lists all unrecognized keys in one
   // issue, so a single retry covers all of them.
-  if (res && res.status === 400 && (payload.portosMeta || payload.catalogBundle || payload.manuscriptReview)) {
+  // A 400 from the receiver is Zod rejecting our envelope BEFORE its schema-version
+  // gate (the 409 path below) runs. Parse the body ONCE and route on which part it
+  // couldn't accept — two distinct mixed-version cases share this block:
+  if (res && res.status === 400) {
     const errBody = await res.clone().json().catch(() => null);
+    const isValidationError = errBody?.code === 'VALIDATION_ERROR';
     const details = Array.isArray(errBody?.context?.details) ? errBody.context.details : [];
     const mentions = (key) => details.some((d) => new RegExp(key).test(`${d?.path || ''} ${d?.message || ''}`));
-    if (errBody?.code === 'VALIDATION_ERROR' && (mentions('portosMeta') || mentions('catalogBundle') || mentions('manuscriptReview'))) {
+    if (
+      isValidationError
+      && (payload.portosMeta || payload.catalogBundle || payload.manuscriptReview || payload.reverseOutline)
+      && (mentions('portosMeta') || mentions('catalogBundle') || mentions('manuscriptReview') || mentions('reverseOutline'))
+    ) {
+      // (1) UNKNOWN ENVELOPE KEY — the peer recognizes the record `kind` but its
+      // `.strict()` schema predates a newer top-level key we sent. Strip whichever
+      // key(s) it named and retry so the record/issues still land; the stripped
+      // feature reaches it once it upgrades (the re-push re-includes the key).
       const legacyPayload = { ...payload };
       const stripped = [];
       if (mentions('portosMeta') && 'portosMeta' in legacyPayload) { delete legacyPayload.portosMeta; stripped.push('portosMeta'); }
       if (mentions('catalogBundle') && 'catalogBundle' in legacyPayload) { delete legacyPayload.catalogBundle; stripped.push('catalogBundle'); }
       if (mentions('manuscriptReview') && 'manuscriptReview' in legacyPayload) { delete legacyPayload.manuscriptReview; stripped.push('manuscriptReview'); reviewStrippedForLegacyPeer = true; }
-      // The series + issues still land; on a pre-feature peer the review simply
-      // doesn't propagate until it upgrades, and a re-push after it upgrades
-      // re-includes the stripped key(s).
+      if (mentions('reverseOutline') && 'reverseOutline' in legacyPayload) { delete legacyPayload.reverseOutline; stripped.push('reverseOutline'); outlineStrippedForLegacyPeer = true; }
       console.log(
         `ℹ️ peerSync: ${peer.name || peer.instanceId} rejected newer envelope key(s) ${stripped.join(', ')} — retrying push without them`,
       );
       res = await postPayload(legacyPayload);
+    } else if (isValidationError && details.some((d) => d?.path === 'kind' && /discriminator|enum/i.test(d?.message || ''))) {
+      // (2) UNKNOWN RECORD KIND → schema-version block (NOT a bare http-400 retry).
+      // When we introduce a NEW federated record kind (authors did this;
+      // mediaCollection had the same gap when it landed), a peer on an older PortOS
+      // whose `peerSyncPushSchema` discriminated union has no arm for that `kind`
+      // rejects the push at the discriminator — so unlike case (1) there's no
+      // smuggled key to drop: the record KIND itself is what the peer can't parse,
+      // and retrying changes nothing. Treat it like the 409: persist an empty-gap
+      // `peer-pre-feature` block so the SchemaGapBadge surfaces "peer needs to update
+      // PortOS to sync <kind>" and the edit-push cooldown engages, instead of letting
+      // the sub churn as a bare `http-400` the UI never explains. The block clears on
+      // the next successful push once the peer upgrades (same recovery as the 409
+      // path). The signal is a `kind`-path discriminator/enum error — a value WE
+      // always send as a valid literal, so the only reason a receiver faults on
+      // `kind` is that its schema doesn't know this record kind yet.
+      await persistSchemaVersionBlock(sub.id, { reason: 'peer-pre-feature' });
+      console.warn(
+        `⚠️ peerSync: ${peer.name || peer.instanceId} rejected push — its PortOS doesn't recognize the ` +
+        `'${sub.recordKind}' record kind yet. Re-tries pause until they upgrade.`,
+      );
+      return { pushed: false, reason: 'peer-schema-behind', blockedBySchema: true };
     }
   }
   // 409 with `code: SCHEMA_VERSION_AHEAD` means the receiver is on an OLDER
@@ -1088,13 +1309,23 @@ export async function pushRecordToPeer(sub, options = {}) {
   // complete (manifest hash-equal pushes are no-ops on the receiver's
   // merge LWW path; only cost is one redundant POST per push cycle
   // until the receiver finishes pulling).
-  const missingCount = Array.isArray(body?.missingAssets) ? body.missingAssets.length : 0;
+  // Count BOTH generic assets and Writers Room draft bodies as "stranded" — a
+  // body the receiver still has to pull keeps the push un-confirmed for the same
+  // reason an asset does (a once-failed pull would otherwise be masked by the
+  // next `unchanged` short-circuit and the prose body stranded).
+  const missingCount = (Array.isArray(body?.missingAssets) ? body.missingAssets.length : 0)
+    + (Array.isArray(body?.missingDraftBodies) ? body.missingDraftBodies.length : 0);
   // REVIEW-STRANDED GUARD: the receiver merged the record/issues (returned 2xx)
   // but its bundled manuscript-review merge threw. Withhold lastPushedHash like
   // the missing-assets case so the next push cycle re-sends the review instead
   // of short-circuiting on `unchanged` — the review has no independent
   // reconciliation path, so a saved hash here would strand the update.
   const reviewSyncPending = body?.reviewSyncPending === true || reviewStrippedForLegacyPeer;
+  // OUTLINE-STRANDED GUARD: same as the review above — the receiver merged the
+  // record/issues but its bundled reverse-outline merge threw (or we stripped
+  // the key for a pre-#1348 peer). The outline has no independent reconciliation
+  // path, so withhold lastPushedHash to re-send next cycle.
+  const outlineSyncPending = body?.outlineSyncPending === true || outlineStrippedForLegacyPeer;
   // This push landed (receiver returned 2xx). Stamp the per-record confirmed-
   // delivery water-mark so tombstoneGc won't prune THIS record's tombstone
   // until its delete-push has been confirmed — even if a later push for a
@@ -1104,7 +1335,7 @@ export async function pushRecordToPeer(sub, options = {}) {
   // the tombstone's deletedAt once it lands. The `missingAssets` case still
   // counts as confirmed delivery of the RECORD (merge ran on the receiver);
   // only the asset-stranded hash is withheld, not the confirmation mark.
-  await persistPushSuccess(sub.id, (missingCount > 0 || reviewSyncPending) ? null : hash, { confirmedAtMs: Date.now() });
+  await persistPushSuccess(sub.id, (missingCount > 0 || reviewSyncPending || outlineSyncPending) ? null : hash, { confirmedAtMs: Date.now() });
   if (Number.isFinite(body?.ackedDeletesUpTo) && body.ackedDeletesUpTo > 0) {
     await ackDeletesUpTo(sub.peerId, body.ackedDeletesUpTo).catch(() => {});
   }
@@ -1186,7 +1417,7 @@ async function persistPushSuccess(subId, hash, { confirmedAtMs = Date.now() } = 
  * what the peer has that we don't — informational) along with the peer's
  * PortOS version string for the user-visible message.
  */
-async function persistSchemaVersionBlock(subId, { ahead, behind, peerPortosVersion, peerSchemaVersions }) {
+async function persistSchemaVersionBlock(subId, { ahead, behind, peerPortosVersion, peerSchemaVersions, reason = 'schema-version-ahead' }) {
   // Capture peerId inside the lock so the emitted event carries it — lets each
   // Instances PeerCard filter on its own peer instead of every card refetching.
   let blockedPeerId = null;
@@ -1198,6 +1429,13 @@ async function persistSchemaVersionBlock(subId, { ahead, behind, peerPortosVersi
     const now = new Date().toISOString();
     sub.blockedBySchema = {
       detectedAt: now,
+      // `schema-version-ahead` = the 409 version-gate path (the peer parsed our
+      // envelope but its per-category gate rejected an ahead schema). `peer-pre-feature`
+      // = the 400 unknown-kind path below (the peer's push schema has no arm for
+      // this record kind at all, so it 400s at Zod before the gate runs). Both
+      // surface the same SchemaGapBadge + engage the same cooldown; the marker just
+      // distinguishes them in state/logs.
+      reason,
       ahead: Array.isArray(ahead) ? ahead : [],
       behind: Array.isArray(behind) ? behind : [],
       peerPortosVersion: peerPortosVersion || null,
@@ -1326,6 +1564,17 @@ async function buildPushPayload(sub, sourceInstanceId) {
       : await import('../pipeline/manuscriptReview.js')
         .then(({ getReview }) => getReview(sub.recordId))
         .catch(() => null);
+    // Bundle the reverse-outline sibling doc (the scene-by-scene segmentation)
+    // on the same terms as the review above: a regenerate-only change doesn't
+    // move the series record, so without bundling it the per-record push would
+    // short-circuit and the receiver's outline would diverge. Only a `complete`
+    // outline is worth shipping. Skip for tombstones. Dynamic import keeps
+    // reverseOutline's arcPlanner graph off peerSync's boot load path.
+    const reverseOutline = record.deleted === true
+      ? null
+      : await import('../pipeline/reverseOutline.js')
+        .then(({ getStoredOutline }) => getStoredOutline(sub.recordId))
+        .catch(() => null);
     return {
       kind: 'series',
       record: sanitized,
@@ -1335,6 +1584,7 @@ async function buildPushPayload(sub, sourceInstanceId) {
       portosMeta,
       ...(linkedCollection ? { linkedCollection } : {}),
       ...(manuscriptReview && manuscriptReview.comments?.length ? { manuscriptReview } : {}),
+      ...(reverseOutline && reverseOutline.status === 'complete' ? { reverseOutline } : {}),
     };
   }
   if (sub.recordKind === 'mediaCollection') {
@@ -1356,6 +1606,72 @@ async function buildPushPayload(sub, sourceInstanceId) {
     const assetManifest = record.deleted === true ? [] : await buildAuthorAssetManifest(record);
     return { kind: 'author', record: sanitized, assetManifest, sourceInstanceId, portosMeta };
   }
+  if (sub.recordKind === 'artist') {
+    const record = await getArtist(sub.recordId, { includeDeleted: true }).catch(() => null);
+    if (!record) return null;
+    const sanitized = sanitizeRecordForWire('artist', record);
+    if (!sanitized) return null;
+    const assetManifest = record.deleted === true ? [] : await buildArtistAssetManifest(record);
+    return { kind: 'artist', record: sanitized, assetManifest, sourceInstanceId, portosMeta };
+  }
+  if (sub.recordKind === 'album') {
+    const record = await getAlbum(sub.recordId, { includeDeleted: true }).catch(() => null);
+    if (!record) return null;
+    const sanitized = sanitizeRecordForWire('album', record);
+    if (!sanitized) return null;
+    const assetManifest = record.deleted === true ? [] : await buildAlbumAssetManifest(record);
+    return { kind: 'album', record: sanitized, assetManifest, sourceInstanceId, portosMeta };
+  }
+  if (sub.recordKind === 'track') {
+    const record = await getTrack(sub.recordId, { includeDeleted: true }).catch(() => null);
+    if (!record) return null;
+    const sanitized = sanitizeRecordForWire('track', record);
+    if (!sanitized) return null;
+    const assetManifest = record.deleted === true ? [] : await buildTrackAssetManifest(record);
+    return { kind: 'track', record: sanitized, assetManifest, sourceInstanceId, portosMeta };
+  }
+  if (sub.recordKind === 'creativeDirectorProject') {
+    const record = await getProject(sub.recordId, { includeDeleted: true }).catch(() => null);
+    if (!record) return null;
+    const sanitized = sanitizeRecordForWire('creativeDirectorProject', record);
+    if (!sanitized) return null;
+    const assetManifest = record.deleted === true ? [] : await buildProjectAssetManifest(record);
+    return { kind: 'creativeDirectorProject', record: sanitized, assetManifest, sourceInstanceId, portosMeta };
+  }
+  if (sub.recordKind === 'moodBoard') {
+    const record = await getBoard(sub.recordId, { includeDeleted: true }).catch(() => null);
+    if (!record) return null;
+    const sanitized = sanitizeRecordForWire('moodBoard', record);
+    if (!sanitized) return null;
+    const assetManifest = record.deleted === true ? [] : await buildBoardAssetManifest(record);
+    return { kind: 'moodBoard', record: sanitized, assetManifest, sourceInstanceId, portosMeta };
+  }
+  if (sub.recordKind === 'writersRoomWork') {
+    const record = await getWorkForSync(sub.recordId).catch(() => null);
+    if (!record) return null;
+    const sanitized = sanitizeRecordForWire('writersRoomWork', record);
+    if (!sanitized) return null;
+    // The work manifest carries draft-version METADATA; the file-primary `.md`
+    // prose bodies ride a separate `draftBodyManifest` (SHA256 per draft) the
+    // receiver diffs + pulls. A tombstone ships neither asset manifest.
+    const draftBodyManifest = record.deleted === true ? [] : await buildWorkBodyManifest(record);
+    return { kind: 'writersRoomWork', record: sanitized, assetManifest: [], draftBodyManifest, sourceInstanceId, portosMeta };
+  }
+  if (sub.recordKind === 'writersRoomFolder') {
+    // Body-less (#1645) — no asset/body manifest, just the LWW record envelope.
+    const record = await getFolderForSync(sub.recordId).catch(() => null);
+    if (!record) return null;
+    const sanitized = sanitizeRecordForWire('writersRoomFolder', record);
+    if (!sanitized) return null;
+    return { kind: 'writersRoomFolder', record: sanitized, assetManifest: [], sourceInstanceId, portosMeta };
+  }
+  if (sub.recordKind === 'writersRoomExercise') {
+    const record = await getExerciseForSync(sub.recordId).catch(() => null);
+    if (!record) return null;
+    const sanitized = sanitizeRecordForWire('writersRoomExercise', record);
+    if (!sanitized) return null;
+    return { kind: 'writersRoomExercise', record: sanitized, assetManifest: [], sourceInstanceId, portosMeta };
+  }
   return null;
 }
 
@@ -1371,6 +1687,104 @@ async function buildAuthorAssetManifest(author) {
   if (!filename) return [];
   const entry = await hashImageForManifest(filename);
   return entry ? [entry] : [];
+}
+
+async function buildArtistAssetManifest(artist) {
+  const filename = portraitImageFilename(artist?.portraitImageUrl);
+  if (!filename) return [];
+  const entry = await hashImageForManifest(filename);
+  return entry ? [entry] : [];
+}
+
+async function buildAlbumAssetManifest(album) {
+  const filename = coverImageFilename(album?.coverImageUrl);
+  if (!filename) return [];
+  const entry = await hashImageForManifest(filename);
+  return entry ? [entry] : [];
+}
+
+async function buildTrackAssetManifest(track) {
+  // A track now carries a render history — every render's audio must ride the
+  // manifest, not just the active pointer, so a peer can play any received card.
+  // Union the active filename with each render's; de-dup (the active render's
+  // bytes are also in renders[]).
+  const filenames = new Set();
+  const active = trackAudioFilename(track?.audioFilename);
+  if (active) filenames.add(active);
+  for (const r of Array.isArray(track?.renders) ? track.renders : []) {
+    const f = trackAudioFilename(r?.audioFilename);
+    if (f) filenames.add(f);
+  }
+  const entries = await Promise.all(
+    [...filenames].map((filename) => hashSimpleAsset(filename, 'music', PATHS.music)),
+  );
+  return entries.filter(Boolean);
+}
+
+/**
+ * Hash a Creative Director project's direct image input (`startingImageFile`) so
+ * the receiver can pull the bytes from `/data/images/`. `startingImageFilename`
+ * returns null for an external URL / non-local path, so those never ship (the
+ * receiver resolves the same URL itself). Scene VIDEO renders are NOT hashed
+ * here: they live in the project's linked media collection, which federates as
+ * its own record and ships its bytes via that collection's manifest — duplicating
+ * them here would double the transfer. This mirrors buildAuthorAssetManifest:
+ * one direct asset, missing-local-file skipped silently.
+ */
+async function buildProjectAssetManifest(project) {
+  const filename = startingImageFilename(project?.startingImageFile);
+  if (!filename) return [];
+  const entry = await hashImageForManifest(filename);
+  return entry ? [entry] : [];
+}
+
+/**
+ * Hash the local image bytes a mood board's items reference so the receiver can
+ * pull them from `/data/{images,image-refs,videos}/`. An image item points at
+ * local bytes two ways: a media-key (`image:<ref>` / `video:<ref>`) into the
+ * gallery, or an app-path `imageUrl` — a gallery render (`/data/images/...`) OR a
+ * character/canon reference sheet (`/data/image-refs/...`, the form
+ * PinToMoodBoardMenu pins synthetic `canon-sheet:`/`noun:` sources under).
+ * External URLs (http(s)/data/blob) resolve on the receiver itself → skipped.
+ * Mirrors `buildAssetManifestForCollection`: path-traversal-guarded,
+ * missing-local-file skipped silently (including a null-hash entry would make
+ * every receiver re-request bytes the sender can't fulfill),
+ * dedup-by-`<kind>:<filename>` so a media-key and imageUrl pointing at the same
+ * file ship once. Text items carry no bytes.
+ */
+async function buildBoardAssetManifest(board) {
+  const dedup = new Map();
+  for (const it of board?.items || []) {
+    if (!it || it.type !== 'image') continue;
+    const pending = [];
+    if (typeof it.mediaKey === 'string') {
+      const parsed = parseKey(it.mediaKey);
+      if (parsed) {
+        const safeName = sanitizeAssetFilename(parsed.ref);
+        if (safeName) {
+          pending.push(parsed.kind === 'video'
+            ? hashSimpleAsset(collectionVideoRefToFilename(safeName), 'video', PATHS.videos)
+            : hashImageForManifest(safeName));
+        }
+      }
+    }
+    if (typeof it.imageUrl === 'string') {
+      const asset = imageUrlToAppAsset(it.imageUrl);
+      const safeName = asset ? sanitizeAssetFilename(asset.filename) : null;
+      if (safeName) {
+        // `image-ref` bytes stream-hash from PATHS.imageRefs (same kind/dir the
+        // universe-canon manifest uses); gallery `image` bytes go through the
+        // sidecar-aware hashImageForManifest.
+        pending.push(asset.kind === 'image-ref'
+          ? hashSimpleAsset(safeName, 'image-ref', PATHS.imageRefs)
+          : hashImageForManifest(safeName));
+      }
+    }
+    for (const entry of await Promise.all(pending)) {
+      if (entry) dedup.set(`${entry.kind}:${entry.filename}`, entry);
+    }
+  }
+  return [...dedup.values()];
 }
 
 /**
@@ -1537,7 +1951,7 @@ export async function applyIncomingPush(payload) {
   if (!isPlainObject(payload)) {
     throw makeErr('payload must be an object', ERR_VALIDATION);
   }
-  const { kind, record, issues, linkedCollection, catalogBundle, manuscriptReview, assetManifest, sourceInstanceId, portosMeta } = payload;
+  const { kind, record, issues, linkedCollection, catalogBundle, manuscriptReview, reverseOutline, assetManifest, draftBodyManifest, sourceInstanceId, portosMeta } = payload;
   if (!PEER_SUBSCRIBABLE_KINDS.includes(kind)) {
     throw makeErr(`unknown kind: ${kind}`, ERR_VALIDATION);
   }
@@ -1666,6 +2080,11 @@ export async function applyIncomingPush(payload) {
   // sender so it withholds lastPushedHash and retries (the review has no other
   // reconciliation path; see the merge block below).
   let reviewSyncPending = false;
+  // Same contract as reviewSyncPending, for the bundled reverse-outline doc.
+  let outlineSyncPending = false;
+  // Set true when a writersRoomWork merge accepted the remote (insert/remote-won)
+  // — gates whether a present-but-different local draft body may be overwritten.
+  let workMergeApplied = false;
   if (kind === 'universe') {
     await mergeUniversesFromSync([record], { source });
   } else if (kind === 'series') {
@@ -1696,10 +2115,42 @@ export async function applyIncomingPush(payload) {
         reviewSyncPending = true;
       });
     }
+    // Merge the bundled reverse-outline sibling doc, whole-doc LWW on
+    // generatedAt. Same ephemeral/tombstone guards + pending-signal contract as
+    // the review above: a merge failure must withhold the sender's hash so the
+    // outline (which has no independent reconciliation cycle) re-sends next
+    // cycle. Dynamic import keeps the arcPlanner graph off peerSync's load path.
+    if (!localEphemeral && record.deleted !== true && isPlainObject(reverseOutline)) {
+      const { mergeOutlineFromSync } = await import('../pipeline/reverseOutline.js');
+      await mergeOutlineFromSync(record.id, reverseOutline).catch((err) => {
+        console.log(`⚠️ peerSync: reverseOutline merge failed: ${err.message}`);
+        outlineSyncPending = true;
+      });
+    }
   } else if (kind === 'mediaCollection') {
     await mergeMediaCollectionsFromSync([record], { source });
   } else if (kind === 'author') {
     await mergeAuthorsFromSync([record], { source });
+  } else if (kind === 'artist') {
+    await mergeArtistsFromSync([record], { source });
+  } else if (kind === 'album') {
+    await mergeAlbumsFromSync([record], { source });
+  } else if (kind === 'track') {
+    await mergeTracksFromSync([record], { source });
+  } else if (kind === 'creativeDirectorProject') {
+    await mergeProjectsFromSync([record], { source });
+  } else if (kind === 'moodBoard') {
+    await mergeBoardsFromSync([record], { source });
+  } else if (kind === 'writersRoomWork') {
+    const mergeResult = await mergeWorksFromSync([record], { source });
+    // Did the receiver accept the remote work (insert / remote-won LWW)? This
+    // gates whether a PRESENT-but-different local draft body may be overwritten —
+    // a stale push that lost the LWW must NOT clobber newer local prose.
+    workMergeApplied = mergeResult?.applied === true;
+  } else if (kind === 'writersRoomFolder') {
+    await mergeFoldersFromSync([record], { source });
+  } else if (kind === 'writersRoomExercise') {
+    await mergeExercisesFromSync([record], { source });
   }
 
   // Apply the bundled collection (if any) — same LWW + union-of-items
@@ -1793,11 +2244,42 @@ export async function applyIncomingPush(payload) {
     });
   }
 
+  // Writers Room: the file-primary draft `.md` bodies ride their own manifest
+  // (the generic asset pipeline keys on a flat basename + single dir per kind;
+  // bodies live at works/<workId>/drafts/<draftId>.md). Diff against local disk
+  // and background-pull the missing ones from the sender's /data/writers-room
+  // static mount. `includeMismatched: workMergeApplied` is the data-safety gate —
+  // a present-but-different local body is only replaced when the receiver also
+  // accepted the remote record (so a stale push can't clobber newer local prose);
+  // an absent body is always pulled (fills inserts + retries a failed pull).
+  // Same guards as the asset path: skip for local-ephemeral and tombstone pushes.
+  let missingDraftBodies = [];
+  if (kind === 'writersRoomWork' && !localEphemeral && record.deleted !== true) {
+    // Scope the manifest to THIS work: a body entry's path is works/<workId>/...,
+    // so an entry whose workId != the pushed record's id would write bytes into a
+    // DIFFERENT local work's draft (clobbering unrelated prose when the merge
+    // accepted the remote). A peer may only replicate the bodies of the work it
+    // actually pushed.
+    const ownBodies = Array.isArray(draftBodyManifest)
+      ? draftBodyManifest.filter((e) => e && e.workId === record.id)
+      : [];
+    missingDraftBodies = await diffWorkBodyManifest(ownBodies, { includeMismatched: workMergeApplied });
+    if (missingDraftBodies.length > 0) {
+      pullMissingWorkBodies(sourceInstanceId, missingDraftBodies).catch((err) => {
+        console.log(`⚠️ peerSync: draft-body pull from ${sourceInstanceId} failed: ${err.message}`);
+      });
+    }
+  }
+
   return {
     missingAssets,
+    // Surfaced like missingAssets so the sender withholds lastPushedHash while
+    // bodies are still pending and keeps re-pushing until the pulls land.
+    ...(missingDraftBodies.length > 0 ? { missingDraftBodies } : {}),
     reverseSubscriptionCreated,
     ackedDeletesUpTo,
     ...(reviewSyncPending ? { reviewSyncPending: true } : {}),
+    ...(outlineSyncPending ? { outlineSyncPending: true } : {}),
   };
 }
 
@@ -1922,6 +2404,50 @@ async function classifyLocalRecord(recordKind, recordId) {
     const a = await getAuthor(recordId, { includeDeleted: true }).catch(() => null);
     return a ? 'syncable' : 'missing';
   }
+  if (recordKind === 'artist') {
+    const a = await getArtist(recordId, { includeDeleted: true }).catch(() => null);
+    return a ? 'syncable' : 'missing';
+  }
+  if (recordKind === 'album') {
+    const a = await getAlbum(recordId, { includeDeleted: true }).catch(() => null);
+    return a ? 'syncable' : 'missing';
+  }
+  if (recordKind === 'track') {
+    const t = await getTrack(recordId, { includeDeleted: true }).catch(() => null);
+    return t ? 'syncable' : 'missing';
+  }
+  if (recordKind === 'creativeDirectorProject') {
+    // CD projects have no `ephemeral` concept (like the persona/music kinds) — a
+    // found record (live or tombstoned) is always 'syncable'. No ping-pong risk:
+    // lastPushedHash + LWW same-`updatedAt` no-op merge prevent it.
+    const p = await getProject(recordId, { includeDeleted: true }).catch(() => null);
+    return p ? 'syncable' : 'missing';
+  }
+  if (recordKind === 'moodBoard') {
+    // Mood boards have no `ephemeral` concept (like the persona/music/CD kinds) —
+    // a found record (live or tombstoned) is always 'syncable'. No ping-pong risk:
+    // lastPushedHash + LWW same-`updatedAt` no-op merge prevent it.
+    const b = await getBoard(recordId, { includeDeleted: true }).catch(() => null);
+    return b ? 'syncable' : 'missing';
+  }
+  if (recordKind === 'writersRoomWork') {
+    // Works have no `ephemeral` concept (like the persona/music/CD/board kinds) —
+    // a found work (live or tombstoned) is always 'syncable', so an inbound work
+    // push bootstraps bidirectional sync. No ping-pong risk: lastPushedHash + LWW
+    // same-`updatedAt` no-op merge prevent it.
+    const w = await getWorkForSync(recordId).catch(() => null);
+    return w ? 'syncable' : 'missing';
+  }
+  if (recordKind === 'writersRoomFolder') {
+    // Body-less, no `ephemeral` concept (#1645) — a found folder (live or
+    // tombstoned) is always 'syncable'. Same no-ping-pong guards as works.
+    const f = await getFolderForSync(recordId).catch(() => null);
+    return f ? 'syncable' : 'missing';
+  }
+  if (recordKind === 'writersRoomExercise') {
+    const e = await getExerciseForSync(recordId).catch(() => null);
+    return e ? 'syncable' : 'missing';
+  }
   return 'missing';
 }
 
@@ -1931,6 +2457,11 @@ const ASSET_KIND_TO_URL_PREFIX = Object.freeze({
   image: '/data/images',
   'image-ref': '/data/image-refs',
   video: '/data/videos',
+  music: '/data/music',
+  // `audio` (#1566) — pipeline TTS / generated audio under data/audio, pulled by
+  // the standalone media-library sweep. (video-thumbnails are NOT pulled: a video
+  // pull regenerates its thumbnail locally — see doPullOneAsset's video branch.)
+  audio: '/data/audio',
 });
 
 const ASSET_PULL_TIMEOUT_MS = 60000;
@@ -1998,6 +2529,127 @@ async function pullMissingAssetsFromPeer(senderInstanceId, missingAssets) {
   }
 }
 
+/**
+ * Fetch a peer's static-mount asset URL into a size-capped Buffer, or null on
+ * any failure. Centralizes the content-length guards shared by the generic
+ * asset pull (`doPullOneAsset`) and the Writers Room draft-body pull
+ * (`pullOneWorkBody`): REQUIRE a trustworthy content-length header up front
+ * (Express serve-static always sets it) so a hostile peer can't OOM us by
+ * shipping a huge body under a small filename before the `.arrayBuffer()` cap
+ * runs. `label` is the filename used in log lines.
+ */
+async function fetchCappedAssetBuffer(peer, url, label, maxBytes, { allowEmpty = false } = {}) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), ASSET_PULL_TIMEOUT_MS);
+  // maxBytes propagates into the HTTPS shim's streaming cap (see
+  // server/lib/httpClient.js); the plain-HTTP path falls back to the
+  // post-resolve content-length checks below (serve-static always sets it).
+  const res = await peerFetch(url, { signal: controller.signal, maxBytes }, peer)
+    .finally(() => clearTimeout(timeoutId))
+    .catch((err) => {
+      if (err?.message?.includes('exceed')) {
+        console.log(`⚠️ peerSync: ${label} exceeded asset size cap — ${err.message}`);
+      }
+      return null;
+    });
+  if (!res || !res.ok) return null;
+  // Use has() to distinguish "header missing" from "header is '0'" — without it
+  // `Number(null)` is 0 and slips past the finite-non-negative guard.
+  if (!res.headers.has('content-length')) {
+    console.log(`⚠️ peerSync: asset ${label} has no content-length — refusing pull`);
+    return null;
+  }
+  const contentLength = Number(res.headers.get('content-length'));
+  // Writers Room draft bodies can legitimately be EMPTY (a brand-new or cleared
+  // draft is a 0-byte .md), so they pass `allowEmpty` to permit Content-Length: 0;
+  // for every other asset kind a 0-byte body is meaningless and stays rejected.
+  const lengthOk = Number.isFinite(contentLength) && (allowEmpty ? contentLength >= 0 : contentLength > 0);
+  if (!lengthOk) {
+    console.log(`⚠️ peerSync: asset ${label} has invalid content-length (${res.headers.get('content-length')}) — refusing pull`);
+    return null;
+  }
+  if (contentLength > maxBytes) {
+    console.log(`⚠️ peerSync: asset ${label} too large (${contentLength}) — refusing pull`);
+    return null;
+  }
+  const buffer = Buffer.from(await res.arrayBuffer());
+  // Defense in depth: the server claimed length X but actually sent more.
+  if (buffer.length > maxBytes || buffer.length !== contentLength) {
+    console.log(`⚠️ peerSync: asset ${label} length mismatch (header=${contentLength}, body=${buffer.length}) — refusing pull`);
+    return null;
+  }
+  return buffer;
+}
+
+// --- Receiver-side Writers Room draft-body pull -------------------------
+// Bodies live at works/<workId>/drafts/<draftId>.md (nested), not a flat
+// basename under one dir, so they ride a dedicated manifest + pull instead of
+// the generic flat-asset pipeline. The sender serves them from its
+// /data/writers-room/works static mount (server/index.js).
+const WORK_BODY_PULL_MAX_BYTES = 16 * 1024 * 1024; // bodies are ≤5MB (validated); 16MB is generous
+
+async function pullMissingWorkBodies(senderInstanceId, missingBodies) {
+  if (!isStr(senderInstanceId) || !Array.isArray(missingBodies) || missingBodies.length === 0) return;
+  const peer = await findPeerById(senderInstanceId);
+  if (!peer) {
+    console.log(`⚠️ peerSync: can't pull draft bodies — peer ${senderInstanceId} not in registry`);
+    return;
+  }
+  const base = peerBaseUrl(peer);
+  for (const entry of missingBodies) {
+    await pullOneWorkBody(peer, base, entry).catch((err) => {
+      console.log(`⚠️ peerSync: draft-body pull ${entry?.draftId} from ${peer.name || senderInstanceId} failed: ${err.message}`);
+    });
+  }
+}
+
+async function pullOneWorkBody(peer, base, entry) {
+  const { workId, draftId } = entry || {};
+  // Re-validate the path segments here even though diffWorkBodyManifest already
+  // did — belt-and-suspenders against a future refactor that bypasses the diff.
+  if (typeof workId !== 'string' || !WORK_ID_RE.test(workId)) return;
+  if (typeof draftId !== 'string' || !DRAFT_ID_RE.test(draftId)) return;
+  const safeLabel = `${workId}/${draftId}.md`;
+  const key = inflightKey(peer.instanceId, WRITERS_ROOM_DRAFT_ASSET_KIND, safeLabel);
+  if (inflightPulls.has(key)) return;
+  inflightPulls.add(key);
+  try {
+    const url = `${base}/data/writers-room/works/${encodeURIComponent(workId)}/drafts/${encodeURIComponent(draftId)}.md`;
+    const buffer = await fetchCappedAssetBuffer(peer, url, safeLabel, WORK_BODY_PULL_MAX_BYTES, { allowEmpty: true });
+    if (!buffer) return;
+    // Integrity: the bytes must hash to the advertised sha256 (discard a corrupt
+    // or wrong download instead of writing it over the draft).
+    const bufHash = createHash('sha256').update(buffer).digest('hex');
+    if (bufHash !== entry.sha256) {
+      console.log(`⚠️ peerSync: draft body ${safeLabel} hash mismatch — discarding (got ${bufHash.slice(0, 8)}, want ${String(entry.sha256).slice(0, 8)})`);
+      return;
+    }
+    // Compare-and-swap against a local save that landed DURING this slow pull:
+    // the draft's merged metadata `contentHash` equals entry.sha256 right after
+    // the merge, but a local saveDraftBody bumps it (+ updatedAt) to the newer
+    // prose. If it no longer matches, the local copy is newer/authoritative (and
+    // will re-push) — don't clobber it with the older peer bytes. A vanished
+    // draft/work (deleted mid-pull) also skips. (sha256File of the .md equals
+    // contentHash(text) since the body is the file verbatim.)
+    const current = await getWorkForSync(workId).catch(() => null);
+    const draft = Array.isArray(current?.drafts) ? current.drafts.find((d) => d?.id === draftId) : null;
+    if (!draft || draft.contentHash !== entry.sha256) {
+      console.log(`⚠️ peerSync: draft body ${safeLabel} target moved since diff — skipping write`);
+      return;
+    }
+    await ensureDir(join(wrWorkDir(workId), 'drafts'));
+    await atomicWrite(wrDraftPath(workId, draftId), buffer);
+    peerSyncEvents.emit('asset-arrived', {
+      filename: `${draftId}.md`,
+      kind: WRITERS_ROOM_DRAFT_ASSET_KIND,
+      peerId: peer.instanceId,
+    });
+    console.log(`📥 peerSync: pulled draft body ${safeLabel} from ${peer.name || peer.instanceId} (${buffer.length} bytes)`);
+  } finally {
+    inflightPulls.delete(key);
+  }
+}
+
 async function pullOneAsset(peer, base, entry) {
   const urlPrefix = ASSET_KIND_TO_URL_PREFIX[entry.kind];
   const localDir = directoryForAssetKind(entry.kind);
@@ -2040,60 +2692,8 @@ async function doPullOneAsset(peer, base, entry, urlPrefix, localDir, safeName) 
   }
 
   const url = `${base}${urlPrefix}/${encodeURIComponent(safeName)}`;
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), ASSET_PULL_TIMEOUT_MS);
-  // maxBytes propagates into the HTTPS shim's streaming cap (see
-  // server/lib/httpClient.js) — without it, an oversized HTTPS asset
-  // buffers the whole body before the post-resolve content-length
-  // check fires. The plain-HTTP fetch path falls back to the
-  // post-resolve checks below (Node's fetch doesn't accept maxBytes,
-  // but Content-Length is universally set by serve-static).
-  const res = await peerFetch(url, { signal: controller.signal, maxBytes: ASSET_PULL_MAX_BYTES }, peer)
-    .finally(() => clearTimeout(timeoutId))
-    .catch((err) => {
-      // The HTTPS shim rejects with a thrown Error when maxBytes is
-      // exceeded — distinguish from network/abort errors so we don't
-      // spam the log on a normal abort.
-      if (err?.message?.includes('exceed')) {
-        console.log(`⚠️ peerSync: ${safeName} exceeded asset size cap — ${err.message}`);
-      }
-      return null;
-    });
-  if (!res || !res.ok) return;
-  // Size-cap enforcement: REQUIRE a trustworthy content-length header up
-  // front and refuse the pull if missing or over-cap. Without the header
-  // we'd have to buffer the whole response before checking buffer.length,
-  // which defeats the cap (a hostile peer could ship a 10GB file under a
-  // small filename and OOM the receiver before the check runs). Express's
-  // `serve-static` always sets content-length for static files (verified
-  // by the `acceptRanges: true` mount config in server/index.js), so this
-  // is enforceable in the real deployment path.
-  // Use has() to distinguish "header missing" from "header is '0'" — without
-  // the explicit check, `Number(null)` is 0 and slips past the finite-non-negative
-  // guard, letting a peer that omits the header buffer an unbounded body before
-  // the size cap runs (the cap on .arrayBuffer() length only kicks in AFTER the
-  // body lands in memory).
-  if (!res.headers.has('content-length')) {
-    console.log(`⚠️ peerSync: asset ${safeName} has no content-length — refusing pull`);
-    return;
-  }
-  const contentLength = Number(res.headers.get('content-length'));
-  if (!Number.isFinite(contentLength) || contentLength <= 0) {
-    console.log(`⚠️ peerSync: asset ${safeName} has invalid content-length (${res.headers.get('content-length')}) — refusing pull`);
-    return;
-  }
-  if (contentLength > ASSET_PULL_MAX_BYTES) {
-    console.log(`⚠️ peerSync: asset ${safeName} too large (${contentLength}) — refusing pull`);
-    return;
-  }
-  const buffer = Buffer.from(await res.arrayBuffer());
-  // Defense in depth: the server claimed length X but actually sent more
-  // (shouldn't happen with serve-static, but content-length is just a
-  // header). Refuse to write the partial / over-cap result.
-  if (buffer.length > ASSET_PULL_MAX_BYTES || buffer.length !== contentLength) {
-    console.log(`⚠️ peerSync: asset ${safeName} length mismatch (header=${contentLength}, body=${buffer.length}) — refusing pull`);
-    return;
-  }
+  const buffer = await fetchCappedAssetBuffer(peer, url, safeName, ASSET_PULL_MAX_BYTES);
+  if (!buffer) return;
   await ensureDir(localDir);
   const fullPath = join(localDir, safeName);
   // atomicWrite (temp + rename) so a crash mid-write doesn't leave a
@@ -2125,6 +2725,784 @@ async function doPullOneAsset(peer, base, entry, urlPrefix, localDir, safeName) 
     const jobId = safeName.replace(/\.[a-z0-9]+$/i, '');
     const videoPath = join(localDir, safeName);
     await generateThumbnail(videoPath, jobId).catch(() => null);
+  }
+}
+
+// --- Standalone media-library federation (#1566) ------------------------
+//
+// The per-record pipeline above replicates only the bytes a SYNCED creative
+// record references. For a declared full-sync peer pair we ALSO mirror the
+// STANDALONE media library — every generated image/video, pipeline audio, and
+// user-uploaded music — so each peer's Media tab is a complete replica.
+//
+// Shape: the sender advertises a library-level manifest (filename + sha256 per
+// asset) at GET /api/peer-sync/library-manifest; a receiver (only for peers it
+// has flagged fullSync) fetches it, diffs vs local disk via the SAME
+// diffAssetManifestAgainstLocal + pullOneAsset machinery the per-record path
+// uses, and rebuilds the derived media_assets index once bytes land. Notably:
+//   - video THUMBNAILS are regenerated locally on each video pull
+//     (doPullOneAsset's video branch), not byte-federated;
+//   - video-history METADATA already union-merges via the `videoHistory`
+//     dataSync category — the bytes are what this adds;
+//   - the generic data/history.jsonl action log is machine-local and never
+//     federated (it's app activity, not media gen history).
+
+// The on-disk media kinds the library manifest covers, resolved at CALL TIME
+// (not frozen at module load) so a redirected PATHS — the test-suite tmpdir
+// pattern, and consistent with directoryForAssetKind reading PATHS live — is
+// honored. `image` carries a gen-params sidecar (rides via hashImageForManifest);
+// the rest are flat bytes. image-refs are EXCLUDED (ephemeral FLUX multi-ref
+// scratch); video-thumbnails are EXCLUDED (regenerated locally on video pull).
+function mediaLibraryDirs() {
+  return [
+    { kind: 'image', dir: PATHS.images },
+    { kind: 'video', dir: PATHS.videos },
+    { kind: 'audio', dir: PATHS.audio },
+    { kind: 'music', dir: PATHS.music },
+  ];
+}
+
+// Stable data-root-relative basename per kind, used only to match backup
+// exclude patterns. Independent of PATHS so a redirected path can't change which
+// exclude pattern applies.
+const MEDIA_LIBRARY_KIND_DIRNAMES = Object.freeze({
+  image: 'images', video: 'videos', audio: 'audio', music: 'music',
+});
+
+// Cap so a pathologically large library can't build an unbounded manifest. 100k
+// assets is far beyond any realistic single-user library; when exceeded we LOG
+// and truncate (per CLAUDE.md "no silent caps") rather than ship an open-ended
+// list. Pagination is a clean follow-up if ever hit. Kept in sync with the
+// `assets` array cap in peerLibraryManifestSchema.
+const MEDIA_LIBRARY_MANIFEST_CAP = 100_000;
+
+/**
+ * Pure matcher: given a list of effective rsync exclude patterns, return the Set
+ * of media-library KINDS the user has excluded from backup (and therefore from
+ * federation, per the #1566 acceptance criterion). Checked at DIRECTORY
+ * granularity — recognizes a whole-dir exclude (`/videos`, `/videos/`,
+ * `/videos/**`, or the bare `videos/` form). Per-file glob granularity is out of
+ * scope: none of the media dirs are excluded by DEFAULT_EXCLUDES, so this only
+ * fires on a custom user exclude like `/music/`, and excluding individual files
+ * from federation isn't a supported control.
+ *
+ * Exported for unit testing without mocking the settings/backup IO.
+ */
+export function libraryKindsExcludedByPatterns(effectiveExcludes) {
+  const excluded = new Set();
+  const patterns = Array.isArray(effectiveExcludes) ? effectiveExcludes : [];
+  // Normalize each pattern to its bare anchored segment in one pass: strip
+  // leading slashes, a trailing `/**`/`/*`, or a trailing slash → `/videos/**`
+  // and `videos/` both collapse to `videos`.
+  const normalized = patterns.map((p) => String(p).replace(/^\/+|\/+\*+$|\/+$/g, ''));
+  for (const [kind, name] of Object.entries(MEDIA_LIBRARY_KIND_DIRNAMES)) {
+    if (normalized.includes(name)) excluded.add(kind);
+  }
+  return excluded;
+}
+
+// Honor the backup exclusion contract (#1566 acceptance). Best-effort: a
+// settings/backup read failure federates everything (the prior behavior), never
+// throws. Composes the IO (read settings, compute effective excludes) with the
+// pure `libraryKindsExcludedByPatterns` matcher above.
+async function excludedLibraryKinds() {
+  const settingsMod = await import('../settings.js').catch(() => null);
+  const backupMod = await import('../backup.js').catch(() => null);
+  if (!settingsMod?.getSettings || !backupMod?.computeEffectiveExcludes) return new Set();
+  const settings = await settingsMod.getSettings().catch(() => null);
+  const excludePaths = Array.isArray(settings?.backup?.excludePaths) ? settings.backup.excludePaths : [];
+  const disabledDefaultExcludes = Array.isArray(settings?.backup?.disabledDefaultExcludes) ? settings.backup.disabledDefaultExcludes : [];
+  const effective = backupMod.computeEffectiveExcludes({ excludePaths, disabledDefaultExcludes });
+  return libraryKindsExcludedByPatterns(effective);
+}
+
+// In-memory hash cache for the flat (non-image) library kinds, keyed by full
+// path → { mtimeMs, size, entry }. The manifest is rebuilt on every poll (each
+// full-sync peer fetches it ~every 60s), and video/music files can be large —
+// re-`sha256File`-ing a multi-GB library every poll is real, avoidable disk I/O.
+// Images already cache their sha in the sidecar (getOrComputeImageSha256), so
+// this only covers video/audio/music. Invalidated on (mtimeMs, size) change —
+// the same cheap signal the image sidecar cache uses; a re-render writes a new
+// file (new mtime), so staleness isn't a concern.
+const libraryFlatHashCache = new Map(); // fullPath → { mtimeMs, size, entry }
+
+async function hashCachedLibraryAsset(name, kind, dir) {
+  const safeName = sanitizeAssetFilename(name);
+  if (!safeName) return null;
+  const fullPath = join(dir, safeName);
+  const st = await stat(fullPath).catch(() => null);
+  if (!st || !st.isFile()) return null;
+  const cached = libraryFlatHashCache.get(fullPath);
+  if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) return cached.entry;
+  const entry = await hashSimpleAsset(safeName, kind, dir);
+  if (entry) libraryFlatHashCache.set(fullPath, { mtimeMs: st.mtimeMs, size: st.size, entry });
+  return entry;
+}
+
+/**
+ * Build the standalone media-library manifest this instance advertises to
+ * full-sync peers. Walks each media dir, hashes every file (reusing the
+ * per-record hashers so the wire shape is identical), and stamps a `manifestHash`
+ * over the sorted entries so a receiver can short-circuit an unchanged library.
+ *
+ * @returns {Promise<{ schemaVersion:number, manifestHash:string, assets:Array }>}
+ */
+export async function buildMediaLibraryManifest() {
+  const excluded = await excludedLibraryKinds();
+  const assets = [];
+  let truncated = false;
+  for (const { kind, dir } of mediaLibraryDirs()) {
+    if (truncated) break;
+    if (excluded.has(kind)) continue;
+    const names = await readdir(dir).catch(() => []); // missing dir → empty (nothing of that kind yet)
+    for (const name of names) {
+      // Image sidecars are metadata, not standalone assets — they ride the image
+      // entry's sidecarSha256 + the receiver's pullSidecarForImage, so skip the
+      // `.json` files in the images dir.
+      if (kind === 'image' && name.endsWith('.json')) continue;
+      const entry = kind === 'image'
+        ? await hashImageForManifest(name)        // sidecar-cached
+        : await hashCachedLibraryAsset(name, kind, dir); // (mtime,size)-cached
+      if (!entry) continue;
+      if (assets.length >= MEDIA_LIBRARY_MANIFEST_CAP) { truncated = true; break; }
+      assets.push(entry);
+    }
+  }
+  if (truncated) {
+    console.log(`⚠️ peerSync: media-library manifest hit the ${MEDIA_LIBRARY_MANIFEST_CAP}-asset cap — truncating (some assets won't federate; pagination is a follow-up)`);
+  }
+  // Deterministic order (sort by filename) so the manifestHash converges across
+  // machines regardless of readdir order / filesystem.
+  const sorted = assets.sort((a, b) => (a.filename < b.filename ? -1 : a.filename > b.filename ? 1 : 0));
+  const manifestHash = createHash('sha256')
+    .update(sorted.map((e) => `${e.kind}:${e.filename}:${e.sha256 || ''}:${e.sidecarSha256 || ''}`).join('\n'))
+    .digest('hex');
+  return { schemaVersion: PORTOS_SCHEMA_VERSIONS.mediaLibrary, manifestHash, assets: sorted };
+}
+
+// Receiver-side: last manifestHash fully processed per peer, so an unchanged
+// library skips the diff entirely. In-memory (rebuilt on restart — the first
+// post-boot sweep just re-confirms disk, cheap because the diff finds everything
+// present and pulls nothing).
+const lastLibraryManifestHash = new Map(); // peerInstanceId → manifestHash
+// Consecutive unchanged-manifest ticks per peer; after FORCE_REVALIDATE_EVERY we
+// force a full re-diff even though the remote manifest is unchanged, so a local
+// file loss self-heals without waiting for a restart or a remote library change.
+const libraryUnchangedSkips = new Map(); // peerInstanceId → count
+const FORCE_REVALIDATE_EVERY = 10; // ~10 min at the 60s sweep cadence
+// Per-peer re-entrancy guard so a slow sweep (large pull) can't overlap itself
+// when the periodic tick fires again before it finishes.
+const librarySweepInFlight = new Set(); // peerInstanceId
+// The manifest JSON itself (not the bytes — those ride the per-asset 100MB cap).
+const MEDIA_LIBRARY_MANIFEST_MAX_BYTES = 32 * 1024 * 1024;
+
+async function reconcileMediaLibraryIndex() {
+  // Dynamic import keeps the DB-backed index module out of peerSync's static
+  // graph (it no-ops under the file/test backend). image+video rows are rebuilt
+  // from disk; audio/music aren't indexed (served from disk directly).
+  const mod = await import('../mediaAssetIndex/index.js').catch(() => null);
+  if (!mod?.reconcileMediaAssets) return;
+  await mod.reconcileMediaAssets().catch((err) => {
+    console.log(`⚠️ peerSync: media_assets reconcile after library sweep failed: ${err.message}`);
+  });
+}
+
+/**
+ * Receiver-pull the standalone media library from ONE full-sync peer: fetch its
+ * manifest, gate on schema version, diff vs local disk, pull missing bytes, then
+ * rebuild the derived media_assets index. No-op for a non-full-sync peer.
+ *
+ * Best-effort + idempotent: every guard returns rather than throws so a periodic
+ * caller can fire it unconditionally.
+ *
+ * @param {object} peer  a peer entry from getPeers()
+ * @returns {Promise<{ pulled:number, skipped?:string }>}
+ */
+export async function syncMediaLibraryFromPeer(peer) {
+  if (!isPlainObject(peer) || peer.fullSync !== true || !isStr(peer.instanceId)) {
+    return { pulled: 0, skipped: 'not-fullsync' };
+  }
+  if (librarySweepInFlight.has(peer.instanceId)) return { pulled: 0, skipped: 'in-flight' };
+  librarySweepInFlight.add(peer.instanceId);
+  try {
+    const url = `${peerBaseUrl(peer)}/api/peer-sync/library-manifest`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), ASSET_PULL_TIMEOUT_MS);
+    const res = await peerFetch(url, { signal: controller.signal, maxBytes: MEDIA_LIBRARY_MANIFEST_MAX_BYTES }, peer)
+      .finally(() => clearTimeout(timeoutId))
+      .catch(() => null);
+    if (!res || !res.ok) return { pulled: 0, skipped: 'unreachable' };
+    // Enforce the manifest cap before buffering the body. peerFetch's `maxBytes`
+    // only streams-caps the HTTPS (host) shim; for a plain-HTTP (address) peer it
+    // delegates to native fetch, which ignores `maxBytes`, so `res.json()` would
+    // otherwise buffer an unbounded body. Express on the sender sets Content-Length
+    // for the JSON response, so a content-length check here is the real cap (mirrors
+    // the record-pull path's RECORD_PAYLOAD_MAX_BYTES guard). A peer that omits it
+    // is a trusted tailnet peer per the threat model.
+    const declaredLen = Number(res.headers?.get?.('content-length'));
+    if (Number.isFinite(declaredLen) && declaredLen > MEDIA_LIBRARY_MANIFEST_MAX_BYTES) {
+      console.log(`⚠️ peerSync: media-library manifest from ${peer.name || peer.instanceId} too large (${declaredLen} > ${MEDIA_LIBRARY_MANIFEST_MAX_BYTES}) — skipping`);
+      return { pulled: 0, skipped: 'too-large' };
+    }
+    const body = await res.json().catch(() => null);
+    const parsed = peerLibraryManifestSchema.safeParse(body);
+    if (!parsed.success) {
+      console.log(`⚠️ peerSync: media-library manifest from ${peer.name || peer.instanceId} failed validation — skipping`);
+      return { pulled: 0, skipped: 'invalid' };
+    }
+    const manifest = parsed.data;
+    // Schema gate — GENTLE skip (not reject): the sender's manifest envelope is
+    // newer than this instance understands. Wait for the local PortOS to upgrade
+    // rather than mis-pull against a contract we can't read. (Bytes are
+    // version-agnostic, but a manifest-SHAPE bump means a new field we'd mishandle.)
+    if (manifest.schemaVersion > PORTOS_SCHEMA_VERSIONS.mediaLibrary) {
+      console.log(`⏸️ peerSync: ${peer.name || peer.instanceId} media-library manifest is schema v${manifest.schemaVersion} > local v${PORTOS_SCHEMA_VERSIONS.mediaLibrary} — skipping until this instance updates`);
+      return { pulled: 0, skipped: 'schema-ahead' };
+    }
+    // Unchanged-library short-circuit — but force a full re-diff every
+    // FORCE_REVALIDATE_EVERY consecutive unchanged ticks so a LOCAL file loss /
+    // corruption self-heals even while the REMOTE manifest stays put. (The
+    // recorded hash is in-memory, so a process restart also re-diffs; this covers
+    // the mid-session window between restarts.)
+    if (lastLibraryManifestHash.get(peer.instanceId) === manifest.manifestHash) {
+      const skips = (libraryUnchangedSkips.get(peer.instanceId) || 0) + 1;
+      if (skips < FORCE_REVALIDATE_EVERY) {
+        libraryUnchangedSkips.set(peer.instanceId, skips);
+        return { pulled: 0, skipped: 'unchanged' };
+      }
+      libraryUnchangedSkips.set(peer.instanceId, 0); // periodic forced re-diff — fall through
+    }
+    const missing = await diffAssetManifestAgainstLocal(manifest.assets);
+    if (missing.length === 0) {
+      lastLibraryManifestHash.set(peer.instanceId, manifest.manifestHash);
+      return { pulled: 0 };
+    }
+    const requested = missing.length;
+    // Reuse the per-record pull worker (in-flight dedup, image-sidecar fetch,
+    // video-thumbnail regen).
+    await pullMissingAssetsFromPeer(peer.instanceId, missing);
+    // `pullMissingAssetsFromPeer` swallows per-asset failures (peer drops
+    // mid-sweep, 404, size-cap reject) and always resolves — so a resolved pull
+    // does NOT mean every byte landed. Re-diff against disk to see what actually
+    // arrived; this is the authoritative signal, not the pull's resolution.
+    const stillMissing = await diffAssetManifestAgainstLocal(manifest.assets);
+    const pulled = requested - stillMissing.length;
+    // Rebuild the derived media_assets index when any image/video bytes landed so
+    // the gallery/Media tab reflects them. Idempotent; best-effort.
+    if (pulled > 0) await reconcileMediaLibraryIndex();
+    if (stillMissing.length === 0) {
+      // Full sweep — safe to short-circuit future ticks on this manifestHash.
+      lastLibraryManifestHash.set(peer.instanceId, manifest.manifestHash);
+      console.log(`📥 peerSync: media-library sweep from ${peer.name || peer.instanceId} — pulled ${pulled} asset(s)`);
+    } else {
+      // Partial pull — do NOT record the hash, so the next tick re-diffs and
+      // retries the still-missing assets instead of being marked done.
+      console.log(`⚠️ peerSync: media-library sweep from ${peer.name || peer.instanceId} — pulled ${pulled}/${requested}, ${stillMissing.length} still missing; retrying next tick`);
+    }
+    return { pulled, missing: stillMissing.length };
+  } finally {
+    librarySweepInFlight.delete(peer.instanceId);
+  }
+}
+
+/**
+ * Periodic driver: sweep the standalone media library from every full-sync peer.
+ * Called on a timer from initSharing. Each peer's sweep is independent and
+ * best-effort; the per-peer re-entrancy guard + manifestHash short-circuit keep
+ * an unchanged library cheap.
+ */
+export async function syncMediaLibraryWithAllPeers() {
+  const peers = await getPeers().catch(() => []);
+  const fullSyncPeers = peers.filter((p) => p?.fullSync === true && p?.enabled !== false && isStr(p.instanceId));
+  for (const peer of fullSyncPeers) {
+    await syncMediaLibraryFromPeer(peer).catch((err) => {
+      console.log(`⚠️ peerSync: media-library sweep for ${peer.name || peer.instanceId} failed: ${err.message}`);
+    });
+  }
+}
+
+// --- Completed-agent CoS history federation (#1650) ---------------------
+//
+// For a declared full-sync peer pair we mirror the STANDALONE completed-agent
+// archive tree (data/cos/agents/<YYYY-MM-DD>/<agentId>/{metadata,output,prompt})
+// so each peer's CoS history UI is a complete replica. Archives are immutable
+// once written (an agent never re-completes; agentIds are globally unique), so
+// this is pure append/union byte replication — no merge, no conflict.
+//
+// Shape mirrors the media-library sweep (#1566): the sender advertises a
+// content-addressed manifest at GET /api/peer-sync/cos-history-manifest; a
+// receiver (only for peers it flags fullSync) fetches it, diffs vs local disk,
+// receiver-pulls the missing archive files via the nested-path byte route
+// (GET /api/peer-sync/cos-agent-archive), then merges the lightweight
+// agentId→date index so the history UI lists the arrivals. The pull/integrity
+// path mirrors the Writers Room draft-body pull (nested paths, sha256-verified).
+//
+// Running-agent state (state.json slots), live PTY buffers, the in-flight
+// spawningTasks guard, and worktree working dirs are deliberately NOT federated
+// — only the date-bucketed COMPLETED archives.
+
+// Resolved at CALL TIME (not module load) so a redirected PATHS — the test
+// tmpdir pattern, consistent with mediaLibraryDirs reading PATHS live — is honored.
+function cosAgentsDir() {
+  return join(PATHS.cos, 'agents');
+}
+
+// Cap so a pathologically large history can't build an unbounded manifest. Each
+// agent contributes up to 3 files; 150k entries ≈ 50k agents, far beyond any
+// realistic single-user history. When exceeded we LOG + truncate (CLAUDE.md "no
+// silent caps"). Kept in sync with the `entries` cap in peerCosHistoryManifestSchema.
+// Chosen so the worst-case serialized manifest (~180 bytes/entry ≈ 27MB) stays
+// UNDER COS_HISTORY_MANIFEST_MAX_BYTES below — otherwise this sender-side
+// truncation never engages and a receiver instead rejects the whole manifest on
+// its content-length check (mirrors media-library's 100k-entries-under-32MB).
+const COS_HISTORY_MANIFEST_CAP = 150_000;
+// The manifest JSON itself (not the archive bytes — those ride the per-file cap).
+const COS_HISTORY_MANIFEST_MAX_BYTES = 32 * 1024 * 1024;
+// Per-archive-file hard cap. Agent transcripts (output.txt) can be large; 64MB is
+// generous while still bounding a hostile/runaway peer. An oversized file is
+// logged + skipped (it stays "missing" and is retried, never silently dropped).
+const COS_ARCHIVE_PULL_MAX_BYTES = 64 * 1024 * 1024;
+
+/**
+ * Build the completed-agent history manifest this instance advertises to
+ * full-sync peers. Walks data/cos/agents/<date>/<agentId>/, hashing each of the
+ * three archive files that exist, and stamps a `manifestHash` over the sorted
+ * entries so a receiver can short-circuit an unchanged history.
+ *
+ * @returns {Promise<{ schemaVersion:number, manifestHash:string, entries:Array }>}
+ */
+export async function buildCosHistoryManifest() {
+  const root = cosAgentsDir();
+  const entries = [];
+  let truncated = false;
+  // Top level: date buckets only. Skip index.json and any flat (running-agent)
+  // dirs — only date-bucketed dirs hold COMPLETED archives.
+  const dates = (await readdir(root).catch(() => [])).filter((d) => COS_ARCHIVE_DATE_RE.test(d));
+  outer: for (const date of dates.sort()) {
+    const dateDir = join(root, date);
+    const agentIds = (await readdir(dateDir).catch(() => [])).filter((a) => COS_AGENT_ID_RE.test(a));
+    for (const agentId of agentIds.sort()) {
+      const agentDir = join(dateDir, agentId);
+      for (const file of COS_ARCHIVE_FILES) {
+        const full = join(agentDir, file);
+        if (!existsSync(full)) continue;
+        const sha256 = await sha256File(full).catch(() => null);
+        if (!sha256) continue;
+        if (entries.length >= COS_HISTORY_MANIFEST_CAP) { truncated = true; break outer; }
+        entries.push({ date, agentId, file, sha256 });
+      }
+    }
+  }
+  if (truncated) {
+    console.log(`⚠️ peerSync: cos-history manifest hit the ${COS_HISTORY_MANIFEST_CAP}-entry cap — truncating (some archives won't federate; pagination is a follow-up)`);
+  }
+  // Deterministic order so the manifestHash converges across machines regardless
+  // of readdir order. (date, agentId already sorted above; sort by file too.)
+  entries.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1
+    : a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1
+      : a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
+  const manifestHash = createHash('sha256')
+    .update(entries.map((e) => `${e.date}:${e.agentId}:${e.file}:${e.sha256}`).join('\n'))
+    .digest('hex');
+  return { schemaVersion: PORTOS_SCHEMA_VERSIONS.cosHistory, manifestHash, entries };
+}
+
+/**
+ * Receiver-side: return the manifest entries whose local archive file is absent
+ * or hash-mismatched. Re-validates every path segment (belt-and-suspenders
+ * against a future refactor that bypasses the Zod schema) before any FS op.
+ */
+export async function diffCosHistoryManifestAgainstLocal(manifestEntries) {
+  if (!Array.isArray(manifestEntries)) return [];
+  const root = cosAgentsDir();
+  const missing = [];
+  for (const entry of manifestEntries) {
+    if (!isPlainObject(entry)) continue;
+    const { date, agentId, file, sha256 } = entry;
+    if (!COS_ARCHIVE_DATE_RE.test(date || '') || !COS_AGENT_ID_RE.test(agentId || '') || !COS_ARCHIVE_FILES.includes(file)) continue;
+    const full = join(root, date, agentId, file);
+    if (!existsSync(full)) { missing.push(entry); continue; }
+    const localHash = await sha256File(full).catch(() => null);
+    if (localHash !== sha256) missing.push(entry);
+  }
+  return missing;
+}
+
+// Receiver-side state — mirrors the media-library sweep's bookkeeping.
+const lastCosHistoryManifestHash = new Map(); // peerInstanceId → manifestHash
+const cosHistoryUnchangedSkips = new Map(); // peerInstanceId → count
+const cosHistorySweepInFlight = new Set(); // peerInstanceId
+
+async function pullMissingCosArchives(senderInstanceId, missing) {
+  if (!isStr(senderInstanceId) || !Array.isArray(missing) || missing.length === 0) return [];
+  const peer = await findPeerById(senderInstanceId);
+  if (!peer) {
+    console.log(`⚠️ peerSync: can't pull cos archives — peer ${senderInstanceId} not in registry`);
+    return [];
+  }
+  const base = peerBaseUrl(peer);
+  const landed = [];
+  for (const entry of missing) {
+    const pair = await pullOneCosArchiveFile(peer, base, entry).catch((err) => {
+      console.log(`⚠️ peerSync: cos-archive pull ${entry?.agentId}/${entry?.file} from ${peer.name || senderInstanceId} failed: ${err.message}`);
+      return null;
+    });
+    if (pair) landed.push(pair);
+  }
+  return landed;
+}
+
+async function pullOneCosArchiveFile(peer, base, entry) {
+  const { date, agentId, file, sha256 } = entry || {};
+  // Re-validate segments here even though the diff already did.
+  if (!COS_ARCHIVE_DATE_RE.test(date || '') || !COS_AGENT_ID_RE.test(agentId || '') || !COS_ARCHIVE_FILES.includes(file)) return null;
+  const safeLabel = `${date}/${agentId}/${file}`;
+  const key = inflightKey(peer.instanceId, 'cos-archive', safeLabel);
+  if (inflightPulls.has(key)) return null;
+  inflightPulls.add(key);
+  try {
+    const url = `${base}/api/peer-sync/cos-agent-archive?date=${encodeURIComponent(date)}&agentId=${encodeURIComponent(agentId)}&file=${encodeURIComponent(file)}`;
+    // allowEmpty: output.txt / prompt.txt can legitimately be 0 bytes.
+    const buffer = await fetchCappedAssetBuffer(peer, url, safeLabel, COS_ARCHIVE_PULL_MAX_BYTES, { allowEmpty: true });
+    if (!buffer) return null;
+    // Integrity: discard a corrupt/wrong download instead of writing it.
+    const bufHash = createHash('sha256').update(buffer).digest('hex');
+    if (bufHash !== sha256) {
+      console.log(`⚠️ peerSync: cos archive ${safeLabel} hash mismatch — discarding (got ${bufHash.slice(0, 8)}, want ${String(sha256).slice(0, 8)})`);
+      return null;
+    }
+    const destDir = join(cosAgentsDir(), date, agentId);
+    await ensureDir(destDir);
+    await atomicWrite(join(destDir, file), buffer);
+    peerSyncEvents.emit('asset-arrived', { filename: safeLabel, kind: 'cos-archive', peerId: peer.instanceId });
+    console.log(`📥 peerSync: pulled cos archive ${safeLabel} from ${peer.name || peer.instanceId} (${buffer.length} bytes)`);
+    return { date, agentId };
+  } finally {
+    inflightPulls.delete(key);
+  }
+}
+
+/**
+ * Merge the manifest's completed-agent archives into the local agentId→date
+ * index so the CoS history UI lists them. Called ONLY when the manifest's files
+ * are confirmed present on disk (the diff returned empty), so every referenced
+ * agent — including its metadata.json — exists; a half-pulled agent is never
+ * indexed. Dynamic import keeps cosAgents out of peerSync's static graph (mirrors
+ * reconcileMediaLibraryIndex). addAgentArchivesToIndex unions and never
+ * overwrites a locally-owned id.
+ */
+async function reconcileCosHistoryIndex(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) return;
+  // One {date, agentId} pair per agent (entries carry up to 3 files per agent).
+  const seen = new Set();
+  const pairs = [];
+  for (const e of entries) {
+    const key = `${e.date}/${e.agentId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    pairs.push({ date: e.date, agentId: e.agentId });
+  }
+  const mod = await import('../cosAgents.js').catch(() => null);
+  if (!mod?.addAgentArchivesToIndex) return;
+  await mod.addAgentArchivesToIndex(pairs).catch((err) => {
+    console.log(`⚠️ peerSync: cos-history index merge failed: ${err.message}`);
+  });
+}
+
+/**
+ * Receiver-pull the standalone completed-agent history from ONE full-sync peer.
+ * Best-effort + idempotent (every guard returns rather than throws), mirroring
+ * syncMediaLibraryFromPeer. No-op for a non-full-sync peer.
+ *
+ * @param {object} peer  a peer entry from getPeers()
+ * @returns {Promise<{ pulled:number, skipped?:string, missing?:number }>}
+ */
+export async function syncCosHistoryFromPeer(peer) {
+  if (!isPlainObject(peer) || peer.fullSync !== true || !isStr(peer.instanceId)) {
+    return { pulled: 0, skipped: 'not-fullsync' };
+  }
+  if (cosHistorySweepInFlight.has(peer.instanceId)) return { pulled: 0, skipped: 'in-flight' };
+  cosHistorySweepInFlight.add(peer.instanceId);
+  try {
+    const url = `${peerBaseUrl(peer)}/api/peer-sync/cos-history-manifest`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), ASSET_PULL_TIMEOUT_MS);
+    const res = await peerFetch(url, { signal: controller.signal, maxBytes: COS_HISTORY_MANIFEST_MAX_BYTES }, peer)
+      .finally(() => clearTimeout(timeoutId))
+      .catch(() => null);
+    if (!res || !res.ok) return { pulled: 0, skipped: 'unreachable' };
+    const declaredLen = Number(res.headers?.get?.('content-length'));
+    if (Number.isFinite(declaredLen) && declaredLen > COS_HISTORY_MANIFEST_MAX_BYTES) {
+      console.log(`⚠️ peerSync: cos-history manifest from ${peer.name || peer.instanceId} too large (${declaredLen} > ${COS_HISTORY_MANIFEST_MAX_BYTES}) — skipping`);
+      return { pulled: 0, skipped: 'too-large' };
+    }
+    const body = await res.json().catch(() => null);
+    const parsed = peerCosHistoryManifestSchema.safeParse(body);
+    if (!parsed.success) {
+      console.log(`⚠️ peerSync: cos-history manifest from ${peer.name || peer.instanceId} failed validation — skipping`);
+      return { pulled: 0, skipped: 'invalid' };
+    }
+    const manifest = parsed.data;
+    // Schema gate — GENTLE skip (not reject): wait for the local PortOS to
+    // upgrade rather than mis-pull against a manifest shape we can't read.
+    if (manifest.schemaVersion > PORTOS_SCHEMA_VERSIONS.cosHistory) {
+      console.log(`⏸️ peerSync: ${peer.name || peer.instanceId} cos-history manifest is schema v${manifest.schemaVersion} > local v${PORTOS_SCHEMA_VERSIONS.cosHistory} — skipping until this instance updates`);
+      return { pulled: 0, skipped: 'schema-ahead' };
+    }
+    // Unchanged short-circuit, with a periodic forced re-diff so a LOCAL file
+    // loss self-heals even while the REMOTE manifest stays put.
+    if (lastCosHistoryManifestHash.get(peer.instanceId) === manifest.manifestHash) {
+      const skips = (cosHistoryUnchangedSkips.get(peer.instanceId) || 0) + 1;
+      if (skips < FORCE_REVALIDATE_EVERY) {
+        cosHistoryUnchangedSkips.set(peer.instanceId, skips);
+        return { pulled: 0, skipped: 'unchanged' };
+      }
+      cosHistoryUnchangedSkips.set(peer.instanceId, 0); // forced re-diff — fall through
+    }
+    const missing = await diffCosHistoryManifestAgainstLocal(manifest.entries);
+    if (missing.length === 0) {
+      // Everything the manifest references is already on disk — reconcile the
+      // index BEFORE caching the hash so a present-but-unindexed archive (e.g. a
+      // prior sweep landed the bytes but crashed before the index persisted)
+      // becomes visible, instead of being skipped forever by the unchanged
+      // short-circuit above.
+      await reconcileCosHistoryIndex(manifest.entries);
+      lastCosHistoryManifestHash.set(peer.instanceId, manifest.manifestHash);
+      return { pulled: 0 };
+    }
+    const requested = missing.length;
+    await pullMissingCosArchives(peer.instanceId, missing);
+    // Re-diff: a resolved pull does NOT mean every byte landed (peer dropped,
+    // 404, size-cap reject) — this is the authoritative signal.
+    const stillMissing = await diffCosHistoryManifestAgainstLocal(manifest.entries);
+    const pulled = requested - stillMissing.length;
+    if (stillMissing.length === 0) {
+      // Full manifest now present — reconcile the index from the manifest (every
+      // referenced agent, incl. its metadata.json, is confirmed on disk) before
+      // caching the hash so the arrivals show in the history UI.
+      await reconcileCosHistoryIndex(manifest.entries);
+      lastCosHistoryManifestHash.set(peer.instanceId, manifest.manifestHash);
+      console.log(`📥 peerSync: cos-history sweep from ${peer.name || peer.instanceId} — pulled ${pulled} archive file(s)`);
+    } else {
+      // Partial pull — do NOT record the hash, so the next tick re-diffs and
+      // retries the still-missing files; the index is reconciled once the
+      // manifest is fully present (above), never from a half-pulled agent.
+      console.log(`⚠️ peerSync: cos-history sweep from ${peer.name || peer.instanceId} — pulled ${pulled}/${requested}, ${stillMissing.length} still missing; retrying next tick`);
+    }
+    return { pulled, missing: stillMissing.length };
+  } finally {
+    cosHistorySweepInFlight.delete(peer.instanceId);
+  }
+}
+
+/**
+ * Periodic driver: sweep completed-agent history from every full-sync peer.
+ * Each peer's sweep is independent + best-effort.
+ */
+export async function syncCosHistoryWithAllPeers() {
+  const peers = await getPeers().catch(() => []);
+  const fullSyncPeers = peers.filter((p) => p?.fullSync === true && p?.enabled !== false && isStr(p.instanceId));
+  for (const peer of fullSyncPeers) {
+    await syncCosHistoryFromPeer(peer).catch((err) => {
+      console.log(`⚠️ peerSync: cos-history sweep for ${peer.name || peer.instanceId} failed: ${err.message}`);
+    });
+  }
+}
+
+// === Live CoS task-list + claim-metadata federation (#1712) ================
+//
+// The second half of #1650. Where the completed-agent HISTORY above federates as
+// pure append-only byte replication, the LIVE task files (data/COS-TASKS.md /
+// data/TASKS.md) are mutated by BOTH peers and carry claim/lease metadata (#1563),
+// so they ride a claim-aware per-task LWW MERGE — never a byte/whole-file copy
+// that would clobber a peer's fresh claim and re-open the double-spawn hazard.
+//
+// Transport mirrors the cos-history sweep's receiver-pull shape: the sender
+// advertises its backlog at GET /api/peer-sync/cos-tasks; a receiver (only for
+// peers it flags fullSync) fetches it, version-gates it, short-circuits on an
+// unchanged listHash, and merges per task into its own files via
+// cosTaskStore.mergePeerTasks (dynamic import — keeps the CoS task graph out of
+// peerSync's static import chain, mirroring reconcileCosHistoryIndex's import of
+// cosAgents). The merge itself is the pure cosTaskMerge module.
+//
+// Running-agent state (state.json slots), live PTY buffers, the in-flight
+// spawningTasks guard, and worktree working dirs are deliberately NOT federated —
+// only the task RECORDS + their claim metadata.
+
+// The task payload JSON (not bytes — there are none). Generous vs any real
+// single-user backlog; the build truncates beyond the entry cap and the receiver
+// rejects an over-cap response on its content-length check.
+const COS_TASKS_ENTRY_CAP = 50_000;
+const COS_TASKS_MAX_BYTES = 32 * 1024 * 1024;
+
+// Reduce a parsed task to its wire entry: the fields the receiver's merge +
+// markdown round-trip need, plus the `taskType` discriminator telling it which
+// file the task belongs in. Metadata rides verbatim (claim fields included);
+// the receiver re-escapes/re-parses it safely on its next file read.
+function taskToWireEntry(task, taskType) {
+  const entry = {
+    id: task.id,
+    taskType,
+    status: task.status,
+    priority: task.priority,
+    description: task.description,
+    metadata: isPlainObject(task.metadata) ? task.metadata : {},
+  };
+  if (typeof task.approvalRequired === 'boolean') entry.approvalRequired = task.approvalRequired;
+  if (typeof task.autoApproved === 'boolean') entry.autoApproved = task.autoApproved;
+  return entry;
+}
+
+/**
+ * Build the live task payload this instance advertises to full-sync peers.
+ * Unions the user (TASKS.md) and internal (COS-TASKS.md) backlogs, stamps a
+ * `listHash` over the sorted entries so a receiver can short-circuit an
+ * unchanged backlog, and caps the entry count (logs + truncates beyond it).
+ *
+ * Dynamic import of cosTaskStore keeps the CoS task graph out of peerSync's
+ * static import chain (mirrors reconcileCosHistoryIndex).
+ *
+ * @returns {Promise<{ schemaVersion:number, listHash:string, tasks:Array }>}
+ */
+export async function buildCosTasksPayload() {
+  const empty = { schemaVersion: PORTOS_SCHEMA_VERSIONS.cosTasks, listHash: createHash('sha256').update('').digest('hex'), tasks: [] };
+  const mod = await import('../cosTaskStore.js').catch(() => null);
+  if (!mod?.getUserTasks || !mod?.getCosTasks) return empty;
+  const [userRes, cosRes] = await Promise.all([
+    mod.getUserTasks().catch(() => null),
+    mod.getCosTasks().catch(() => null),
+  ]);
+  let entries = [
+    ...((userRes?.tasks || []).map((t) => taskToWireEntry(t, 'user'))),
+    ...((cosRes?.tasks || []).map((t) => taskToWireEntry(t, 'internal'))),
+  ];
+  if (entries.length > COS_TASKS_ENTRY_CAP) {
+    console.log(`⚠️ peerSync: cos-tasks payload hit the ${COS_TASKS_ENTRY_CAP}-entry cap — truncating (some tasks won't federate this tick)`);
+    entries = entries.slice(0, COS_TASKS_ENTRY_CAP);
+  }
+  // Deterministic order so the listHash is stable across ticks regardless of
+  // file/section order. Hash EVERY field the receiver's merge can act on —
+  // status, priority, description, approval flags, and metadata (incl. claim
+  // metadata) — so any edit the merge would propagate flips the hash and
+  // re-triggers a sweep. Omitting description/approval here would let a receiver
+  // short-circuit `unchanged` and never pull a same-status content edit until the
+  // forced-revalidation window. Pure reordering does not change the hash.
+  entries.sort((a, b) => (a.taskType < b.taskType ? -1 : a.taskType > b.taskType ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const listHash = createHash('sha256')
+    .update(entries.map((e) => `${e.taskType}:${e.id}:${e.status}:${e.priority}:${e.description || ''}:${e.approvalRequired ?? ''}:${e.autoApproved ?? ''}:${JSON.stringify(e.metadata || {})}`).join('\n'))
+    .digest('hex');
+  return { schemaVersion: PORTOS_SCHEMA_VERSIONS.cosTasks, listHash, tasks: entries };
+}
+
+// Receiver-side bookkeeping — mirrors the cos-history sweep.
+const lastCosTasksListHash = new Map(); // peerInstanceId → listHash
+const cosTasksUnchangedSkips = new Map(); // peerInstanceId → count
+const cosTasksSweepInFlight = new Set(); // peerInstanceId
+
+/**
+ * Apply a peer's task payload into the LOCAL task files via a claim-aware merge.
+ * Splits the entries by taskType and hands each file's tasks to
+ * cosTaskStore.mergePeerTasks (which runs the pure merge under the state lock).
+ * Returns the number of files actually changed.
+ */
+async function mergeCosTasksFromPayload(tasks) {
+  const mod = await import('../cosTaskStore.js').catch(() => null);
+  if (!mod?.mergePeerTasks) return 0;
+  const user = [];
+  const internal = [];
+  for (const t of Array.isArray(tasks) ? tasks : []) {
+    if (t?.taskType === 'internal') internal.push(t);
+    else if (t?.taskType === 'user') user.push(t);
+  }
+  let changed = 0;
+  // Always merge BOTH files (even when one side is empty) so a task the peer
+  // resolved/removed from a file converges — an empty list still merges (union
+  // keeps local-only tasks, so it never wipes the local backlog).
+  const userRes = await mod.mergePeerTasks('user', user).catch((err) => {
+    console.log(`⚠️ peerSync: cos-tasks user merge failed: ${err.message}`); return null;
+  });
+  if (userRes?.changed) changed++;
+  const internalRes = await mod.mergePeerTasks('internal', internal).catch((err) => {
+    console.log(`⚠️ peerSync: cos-tasks internal merge failed: ${err.message}`); return null;
+  });
+  if (internalRes?.changed) changed++;
+  return changed;
+}
+
+/**
+ * Receiver-pull the live task backlog from ONE full-sync peer and merge it.
+ * Best-effort + idempotent (every guard returns rather than throws), mirroring
+ * syncCosHistoryFromPeer. No-op for a non-full-sync peer.
+ *
+ * @param {object} peer  a peer entry from getPeers()
+ * @returns {Promise<{ merged:number, skipped?:string }>}
+ */
+export async function syncCosTasksFromPeer(peer) {
+  if (!isPlainObject(peer) || peer.fullSync !== true || !isStr(peer.instanceId)) {
+    return { merged: 0, skipped: 'not-fullsync' };
+  }
+  if (cosTasksSweepInFlight.has(peer.instanceId)) return { merged: 0, skipped: 'in-flight' };
+  cosTasksSweepInFlight.add(peer.instanceId);
+  try {
+    const url = `${peerBaseUrl(peer)}/api/peer-sync/cos-tasks`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), ASSET_PULL_TIMEOUT_MS);
+    const res = await peerFetch(url, { signal: controller.signal, maxBytes: COS_TASKS_MAX_BYTES }, peer)
+      .finally(() => clearTimeout(timeoutId))
+      .catch(() => null);
+    if (!res || !res.ok) return { merged: 0, skipped: 'unreachable' };
+    const declaredLen = Number(res.headers?.get?.('content-length'));
+    if (Number.isFinite(declaredLen) && declaredLen > COS_TASKS_MAX_BYTES) {
+      console.log(`⚠️ peerSync: cos-tasks payload from ${peer.name || peer.instanceId} too large (${declaredLen} > ${COS_TASKS_MAX_BYTES}) — skipping`);
+      return { merged: 0, skipped: 'too-large' };
+    }
+    const body = await res.json().catch(() => null);
+    const parsed = peerCosTasksSchema.safeParse(body);
+    if (!parsed.success) {
+      console.log(`⚠️ peerSync: cos-tasks payload from ${peer.name || peer.instanceId} failed validation — skipping`);
+      return { merged: 0, skipped: 'invalid' };
+    }
+    const payload = parsed.data;
+    // Schema gate — GENTLE skip (not reject): wait for the local PortOS to
+    // upgrade rather than mis-merge against a payload shape we can't read.
+    if (payload.schemaVersion > PORTOS_SCHEMA_VERSIONS.cosTasks) {
+      console.log(`⏸️ peerSync: ${peer.name || peer.instanceId} cos-tasks payload is schema v${payload.schemaVersion} > local v${PORTOS_SCHEMA_VERSIONS.cosTasks} — skipping until this instance updates`);
+      return { merged: 0, skipped: 'schema-ahead' };
+    }
+    // Unchanged short-circuit, with a periodic forced re-merge so a LOCAL task
+    // loss self-heals even while the REMOTE backlog stays put. Unlike cos-history
+    // the merge depends on TIME (lease expiry), so the forced re-merge also lets
+    // an expired remote claim become re-claimable locally without a remote change.
+    if (lastCosTasksListHash.get(peer.instanceId) === payload.listHash) {
+      const skips = (cosTasksUnchangedSkips.get(peer.instanceId) || 0) + 1;
+      if (skips < FORCE_REVALIDATE_EVERY) {
+        cosTasksUnchangedSkips.set(peer.instanceId, skips);
+        return { merged: 0, skipped: 'unchanged' };
+      }
+      cosTasksUnchangedSkips.set(peer.instanceId, 0); // forced re-merge — fall through
+    }
+    const changed = await mergeCosTasksFromPayload(payload.tasks);
+    lastCosTasksListHash.set(peer.instanceId, payload.listHash);
+    if (changed > 0) {
+      console.log(`📥 peerSync: cos-tasks sweep from ${peer.name || peer.instanceId} — merged ${changed} task file(s)`);
+    }
+    return { merged: changed };
+  } finally {
+    cosTasksSweepInFlight.delete(peer.instanceId);
+  }
+}
+
+/**
+ * Periodic driver: merge the live task backlog from every full-sync peer.
+ * Each peer's sweep is independent + best-effort.
+ */
+export async function syncCosTasksWithAllPeers() {
+  const peers = await getPeers().catch(() => []);
+  const fullSyncPeers = peers.filter((p) => p?.fullSync === true && p?.enabled !== false && isStr(p.instanceId));
+  for (const peer of fullSyncPeers) {
+    await syncCosTasksFromPeer(peer).catch((err) => {
+      console.log(`⚠️ peerSync: cos-tasks sweep for ${peer.name || peer.instanceId} failed: ${err.message}`);
+    });
   }
 }
 
@@ -2187,7 +3565,7 @@ export async function collectSubscriptionsForUpdate(recordKind, recordId) {
   // mediaCollections.js's emitRecordUpdated('mediaCollection', …) inert, so
   // collection edits would only reach peers via initial subscribe / manual
   // force-push, never on subsequent edits.
-  if (recordKind === 'universe' || recordKind === 'series' || recordKind === 'mediaCollection' || recordKind === 'author') {
+  if (PEER_SUBSCRIBABLE_KINDS.includes(recordKind)) {
     return listPeerSubscriptions({ recordKind, recordId });
   }
   if (recordKind === 'issue') {
@@ -2442,17 +3820,27 @@ export function installPeerSyncListener() {
   onPeerOnline = (peer) => {
     if (!peer?.instanceId) return;
     (async () => {
-      const cats = peer.syncCategories || {};
-      // KIND_TO_CATEGORY['universe']='universe', ['series']='pipeline'.
-      // Iterate the kind keys so the (kind, category) mapping stays single-
-      // sourced from KIND_TO_CATEGORY.
+      // peerHasCategory owns the (kind → category) mapping and the fullSync
+      // short-circuit, so iterate the kinds and let it decide.
       for (const kind of PEER_SUBSCRIBABLE_KINDS) {
-        const cat = KIND_TO_CATEGORY[kind];
-        if (cats[cat] === true) {
+        // peerHasCategory short-circuits true for a full-sync peer, so a peer
+        // that came online with its category bits off (or a freshly-added
+        // full-sync peer whose instanceId we only just learned) still back-
+        // subscribes every kind here.
+        if (peerHasCategory(peer, kind)) {
           await autoSubscribePeerToAllRecords(peer.instanceId, kind).catch(() => {});
         }
       }
       await retryPendingPushesForPeer(peer.instanceId).catch(() => {});
+      // A full-sync peer added (via defaultPeerFullSync) or toggled before its
+      // instanceId was known couldn't be reciprocated by updatePeer — no identity
+      // yet. peer:online is the first point we know it, so request the mutual
+      // mirror now; otherwise the remote never adopts full-sync until the user
+      // clicks "Make mutual". Echo-guarded on the receiver, so a redundant send
+      // on a later reconnect is a no-op.
+      if (peer.fullSync === true && peer.id) {
+        await enqueueReciprocalSync(peer.id).catch(() => {});
+      }
     })().catch(() => {});
   };
   instanceEvents.on('peer:online', onPeerOnline);

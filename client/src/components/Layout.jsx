@@ -49,17 +49,18 @@ import {
   Cigarette,
   HeartPulse,
   ClipboardList,
+  ListChecks,
   Compass,
   Scale,
   LayoutDashboard,
   Lightbulb,
   GitBranch,
-  Github,
   Link2,
   Database,
   Shield,
   Lock,
   Wand2,
+  Rocket,
   Zap,
   Inbox,
   RefreshCw,
@@ -152,7 +153,7 @@ const navItems = [
       { to: '/brain/notes', label: 'Notes', icon: FileText },
       { to: '/openclaw', label: 'OpenClaw', icon: MessagesSquare },
       { to: '/rapid-reader', label: 'Rapid Reader', icon: Zap },
-      { to: '/agents', label: 'Social Agents', icon: Users },
+      { to: '/tribe', label: 'Tribe', icon: Users },
       { to: '/brain/trust', label: 'Trust', icon: Shield },
       { to: '/wiki/overview', label: 'Wiki', icon: BookOpen },
     ],
@@ -181,11 +182,13 @@ const navItems = [
       { to: '/cos/briefing', label: 'Briefing', icon: Newspaper },
       { to: '/cos/config', label: 'Config', icon: Settings },
       { to: '/cos/digest', label: 'Digest', icon: Calendar },
+      { to: '/feature-agents', label: 'Feature Agents', icon: Wand2 },
       { to: '/cos/gsd', label: 'GSD', icon: Compass },
       { to: '/cos/health', label: 'Health', icon: Activity },
       { to: '/cos/learning', label: 'Learning', icon: GraduationCap },
       { to: '/cos/memory', label: 'Memory', icon: Brain },
       { to: '/cos/schedule', label: 'Schedule', icon: Clock },
+      { to: '/agents', label: 'Social Agents', icon: Users },
       { to: '/cos/productivity', label: 'Streaks', icon: Flame },
       { to: '/cos/jobs', label: 'System Tasks', icon: Bot },
       { to: '/cos/tasks', label: 'Tasks', icon: FileText },
@@ -199,11 +202,15 @@ const navItems = [
     children: [
       { to: '/authors', label: 'Authors', icon: FilePen },
       { to: '/catalog', label: 'Catalog', icon: Sparkles },
+      { to: '/pipeline/editorial-checks', label: 'Editorial Checks', icon: ListChecks },
       { to: '/importer', label: 'Importer', icon: FileInput },
       { to: '/media', label: 'Media Gen', icon: Layers },
+      { to: '/mood-boards', label: 'Mood Boards', icon: Palette },
+      { to: '/music', label: 'Music', icon: Mic },
+      { to: '/rounds', label: 'Rounds', icon: Music },
       { to: '/pipeline', label: 'Series Pipeline', icon: WorkflowIcon, dynamic: 'pipelineSeries' },
       { to: '/sharing', label: 'Sharing', icon: Share2 },
-      { to: '/songs', label: 'Songs', icon: Music },
+      { to: '/start-story', label: 'Start a Story', icon: Rocket },
       { to: '/story-builder', label: 'Story Builder', icon: Wand2 },
       { to: '/universes', label: 'Universes', icon: Globe, dynamic: 'universes' },
       { to: '/writers-room', label: 'Writers Room', icon: NotebookPen },
@@ -222,8 +229,7 @@ const navItems = [
       { to: '/devtools/runner', label: 'Code', icon: Code2 },
       { to: '/data', label: 'Data', icon: HardDrive },
       { to: '/devtools/datadog', label: 'DataDog', icon: Dog },
-      { to: '/feature-agents', label: 'Feature Agents', icon: Wand2 },
-      { to: '/devtools/github', label: 'GitHub', icon: Github },
+      { to: '/devtools/github', label: 'GitHub', icon: GitBranch },
       { to: '/devtools/history', label: 'History', icon: History },
       { to: '/devtools/image-clean', label: 'Image Cleaner', icon: Eraser },
       { to: '/instances', label: 'Instances', icon: Network },
@@ -237,6 +243,7 @@ const navItems = [
       { to: '/system-health', label: 'System Health', icon: Activity },
       { to: '/uploads', label: 'Uploads', icon: Upload },
       { to: '/devtools/usage', label: 'Usage', icon: BarChart3 },
+      { to: '/workspace-contexts', label: 'Workspaces', icon: Layers },
     ],
   },
   { to: '/goals/list', label: 'Goals', icon: Target, single: true },
@@ -1124,10 +1131,10 @@ export default function Layout() {
             location.pathname === '/prompts' ||
             location.pathname === '/review' ||
             location.pathname.startsWith('/settings') ||
-            // Song EDITOR (/songs/:id) and the Learning Guide (/songs/guide)
-            // are full-width and own their own scroll; the bare /songs index
+            // Round EDITOR (/rounds/:id) and the Learning Guide (/rounds/guide)
+            // are full-width and own their own scroll; the bare /rounds index
             // (list + create form) takes the normal padded+scrolling main.
-            location.pathname.startsWith('/songs/') ||
+            location.pathname.startsWith('/rounds/') ||
             location.pathname.startsWith('/wiki') ||
             // Only the universe EDITOR (/universes/:id, /universes/new) is
             // full-width — it manages its own scroll. The /universes index
@@ -1143,6 +1150,10 @@ export default function Layout() {
             location.pathname === '/shell' ||
             location.pathname.startsWith('/shell/') ||
             location.pathname.startsWith('/city') ||
+            // Tribe is a full-bleed two-pane page that owns its own internal
+            // scroll (PageHeader + a `flex-1 overflow-auto` main); keep it out
+            // of the default padded+scrolling main or it double-pads and clips.
+            location.pathname === '/tribe' ||
             // Only the App DETAIL editor (/apps/:id, /apps/:id/:tab) is
             // full-width and owns its own scroll; the Add App form
             // (/apps/create) is a plain scrolling page and must stay OUT of

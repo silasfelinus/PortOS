@@ -26,6 +26,7 @@ const FeatureAgents = lazyWithReload(() => import('./pages/FeatureAgents'));
 const FeatureAgentDetail = lazyWithReload(() => import('./pages/FeatureAgentDetail'));
 const CalendarPage = lazyWithReload(() => import('./pages/Calendar'));
 const Messages = lazyWithReload(() => import('./pages/Messages'));
+const Tribe = lazyWithReload(() => import('./pages/Tribe'));
 const Goals = lazyWithReload(() => import('./pages/Goals'));
 const OpenClawPage = lazyWithReload(() => import('./pages/OpenClaw'));
 const Submodules = lazyWithReload(() => import('./pages/Submodules'));
@@ -47,16 +48,19 @@ const LoraDatasetDetail = lazyWithReload(() => import('./pages/LoraDatasetDetail
 const UniverseBuilder = lazyWithReload(() => import('./pages/UniverseBuilder'));
 const Universes = lazyWithReload(() => import('./pages/Universes'));
 const Authors = lazyWithReload(() => import('./pages/Authors'));
+const Music = lazyWithReload(() => import('./pages/Music'));
 const Catalog = lazyWithReload(() => import('./pages/Catalog'));
-const Songs = lazyWithReload(() => import('./pages/Songs'));
-const SongEditor = lazyWithReload(() => import('./pages/SongEditor'));
-const SongsGuide = lazyWithReload(() => import('./pages/SongsGuide'));
+const Rounds = lazyWithReload(() => import('./pages/Rounds'));
+const RoundEditor = lazyWithReload(() => import('./pages/RoundEditor'));
+const RoundsGuide = lazyWithReload(() => import('./pages/RoundsGuide'));
 const CatalogIngest = lazyWithReload(() => import('./pages/CatalogIngest'));
 const CatalogIngredient = lazyWithReload(() => import('./pages/CatalogIngredient'));
 const VideoTimeline = lazyWithReload(() => import('./pages/VideoTimeline'));
 const VideoTimelineEditor = lazyWithReload(() => import('./pages/VideoTimelineEditor'));
 const CreativeDirector = lazyWithReload(() => import('./pages/CreativeDirector'));
 const CreativeDirectorDetail = lazyWithReload(() => import('./pages/CreativeDirectorDetail'));
+const MoodBoards = lazyWithReload(() => import('./pages/MoodBoards'));
+const MoodBoardDetail = lazyWithReload(() => import('./pages/MoodBoardDetail'));
 const CreateApp = lazyWithReload(() => import('./pages/CreateApp'));
 const Templates = lazyWithReload(() => import('./pages/Templates'));
 const PromptManager = lazyWithReload(() => import('./pages/PromptManager'));
@@ -74,6 +78,7 @@ const JiraReports = lazyWithReload(() => import('./pages/JiraReports'));
 const DataManager = lazyWithReload(() => import('./pages/DataManager'));
 const Insights = lazyWithReload(() => import('./pages/Insights'));
 const Instances = lazyWithReload(() => import('./pages/Instances'));
+const WorkspaceContexts = lazyWithReload(() => import('./pages/WorkspaceContexts'));
 const SystemHealthPage = lazyWithReload(() => import('./pages/SystemHealthPage'));
 const CapabilityMap = lazyWithReload(() => import('./pages/CapabilityMap'));
 const MeatSpace = lazyWithReload(() => import('./pages/MeatSpace'));
@@ -88,9 +93,14 @@ const WritersRoomGuide = lazyWithReload(() => import('./pages/WritersRoomGuide')
 const Pipeline = lazyWithReload(() => import('./pages/Pipeline'));
 const Sharing = lazyWithReload(() => import('./pages/Sharing'));
 const Importer = lazyWithReload(() => import('./pages/Importer'));
+const StartStory = lazyWithReload(() => import('./pages/StartStory'));
 const StoryBuilder = lazyWithReload(() => import('./pages/StoryBuilder'));
 const PipelineSeries = lazyWithReload(() => import('./pages/PipelineSeries'));
 const PipelineSeriesRoadmap = lazyWithReload(() => import('./pages/PipelineSeriesRoadmap'));
+const PipelineEditorialChecks = lazyWithReload(() => import('./pages/PipelineEditorialChecks'));
+const PipelineFindingRedirect = lazyWithReload(() => import('./pages/PipelineFindingRedirect'));
+const PipelineReverseOutline = lazyWithReload(() => import('./pages/PipelineReverseOutline'));
+const PipelineContinuityBible = lazyWithReload(() => import('./pages/PipelineContinuityBible'));
 const PipelineManuscriptEditor = lazyWithReload(() => import('./pages/PipelineManuscriptEditor'));
 const PipelineIssue = lazyWithReload(() => import('./pages/PipelineIssue'));
 const Login = lazyWithReload(() => import('./pages/Login'));
@@ -225,6 +235,8 @@ export default function App() {
           <Route path="insights" element={<Navigate to="/insights/overview" replace />} />
           <Route path="insights/:tab" element={<Insights />} />
           <Route path="instances" element={<Instances />} />
+          <Route path="workspace-contexts" element={<WorkspaceContexts />} />
+          <Route path="workspace-contexts/:appId" element={<WorkspaceContexts />} />
           <Route path="system-health" element={<SystemHealthPage />} />
           <Route path="capabilities" element={<CapabilityMap />} />
           <Route path="loops" element={<Loops />} />
@@ -236,6 +248,7 @@ export default function App() {
           <Route path="review" element={<Review />} />
           <Route path="messages" element={<Navigate to="/messages/inbox" replace />} />
           <Route path="messages/:tab" element={<Messages />} />
+          <Route path="tribe" element={<Tribe />} />
           <Route path="openclaw" element={<OpenClawPage />} />
           <Route path="datadog" element={<Navigate to="/devtools/datadog" replace />} />
           <Route path="jira" element={<Navigate to="/devtools/jira" replace />} />
@@ -282,12 +295,14 @@ export default function App() {
               at `/universes/:universeId`; `new` is the create-mode sentinel
               (UniverseBuilder treats it as no-id → blank draft). Universe ids are
               UUIDs, so `new` can never collide with a real record. */}
-          <Route path="songs" element={<Songs />} />
-          <Route path="songs/guide" element={<SongsGuide />} />
-          <Route path="songs/:id" element={<SongEditor />} />
+          <Route path="rounds" element={<Rounds />} />
+          <Route path="rounds/guide" element={<RoundsGuide />} />
+          <Route path="rounds/:id" element={<RoundEditor />} />
           <Route path="catalog" element={<Catalog />} />
           <Route path="catalog/ingest" element={<CatalogIngest />} />
           <Route path="catalog/:type/:id" element={<CatalogIngredient />} />
+          <Route path="mood-boards" element={<MoodBoards />} />
+          <Route path="mood-boards/:id" element={<MoodBoardDetail />} />
           <Route path="universes" element={<Universes />} />
           <Route path="universes/new" element={<UniverseBuilder />} />
           <Route path="universes/:universeId" element={<UniverseBuilder />} />
@@ -304,13 +319,20 @@ export default function App() {
           <Route path="sharing" element={<Sharing />} />
           <Route path="sharing/:section" element={<Sharing />} />
           <Route path="importer" element={<Importer />} />
+          <Route path="start-story" element={<StartStory />} />
           <Route path="story-builder" element={<StoryBuilder />} />
           <Route path="story-builder/:storyId" element={<Navigate to="idea" replace />} />
           <Route path="story-builder/:storyId/:step" element={<StoryBuilder />} />
           <Route path="authors" element={<Authors />} />
+          <Route path="music" element={<Music />} />
+          <Route path="music/:tab" element={<Music />} />
           <Route path="pipeline" element={<Pipeline />} />
+          <Route path="pipeline/editorial-checks" element={<PipelineEditorialChecks />} />
+          <Route path="pipeline/findings/:commentId" element={<PipelineFindingRedirect />} />
           <Route path="pipeline/series/:seriesId" element={<PipelineSeries />} />
           <Route path="pipeline/series/:seriesId/roadmap" element={<PipelineSeriesRoadmap />} />
+          <Route path="pipeline/series/:seriesId/reverse-outline" element={<PipelineReverseOutline />} />
+          <Route path="pipeline/series/:seriesId/continuity-bible" element={<PipelineContinuityBible />} />
           {/* Splat (not a :param route) so navigating between issues reuses the
               same component instance instead of remounting + refetching. */}
           <Route path="pipeline/series/:seriesId/manuscript/*" element={<PipelineManuscriptEditor />} />
