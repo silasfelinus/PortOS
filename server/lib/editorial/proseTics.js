@@ -185,6 +185,12 @@ function normalizeWord(p) {
   return typeof p === 'string' ? p.trim().toLowerCase() : '';
 }
 
+// Normalize a house-style/extra word list into a Set for O(1) membership in the
+// token-loop scanners. Tolerates a non-array (returns an empty Set).
+function toWordSet(words) {
+  return new Set((Array.isArray(words) ? words : []).map(normalizeWord).filter(Boolean));
+}
+
 /**
  * Tokenize prose into words with their absolute character offsets. Apostrophes
  * are kept inside a word ("couldn't") so contractions stay whole. Exported so
@@ -232,7 +238,7 @@ export function splitSentences(text) {
 // with flexible internal whitespace (like ./cliches.js). Returns null when the
 // effective list (seed + extra − allow) is empty.
 function buildListMatcher(seed, opts = {}) {
-  const allow = new Set((Array.isArray(opts.allowWords) ? opts.allowWords : []).map(normalizeWord).filter(Boolean));
+  const allow = toWordSet(opts.allowWords);
   const extra = (Array.isArray(opts.extraWords) ? opts.extraWords : []).map(normalizeWord).filter(Boolean);
   const seen = new Set();
   const entries = [];
@@ -326,8 +332,8 @@ function isLyAdverb(lower) {
 export function findAdverbs(text, opts = {}) {
   const tokens = tokenizeWords(text);
   if (!tokens.length) return [];
-  const allow = new Set((Array.isArray(opts.allowWords) ? opts.allowWords : []).map(normalizeWord).filter(Boolean));
-  const extra = new Set((Array.isArray(opts.extraWords) ? opts.extraWords : []).map(normalizeWord).filter(Boolean));
+  const allow = toWordSet(opts.allowWords);
+  const extra = toWordSet(opts.extraWords);
   const tagSet = new Set(DIALOGUE_TAGS);
   const out = [];
   for (let i = 0; i < tokens.length; i += 1) {
@@ -418,8 +424,8 @@ export function findPassiveVoice(text, opts = {}) {
   const tokens = tokenizeWords(text);
   if (!tokens.length) return [];
   const beSet = new Set(BE_VERBS);
-  const allow = new Set((Array.isArray(opts.allowWords) ? opts.allowWords : []).map(normalizeWord).filter(Boolean));
-  const extra = new Set((Array.isArray(opts.extraWords) ? opts.extraWords : []).map(normalizeWord).filter(Boolean));
+  const allow = toWordSet(opts.allowWords);
+  const extra = toWordSet(opts.extraWords);
   // A participle is recognized when the heuristic OR a series `extraWords` entry
   // matches, unless the series allow-listed it.
   const isParticiple = (lower) => (isPastParticiple(lower) || extra.has(lower)) && !allow.has(lower);
@@ -506,7 +512,7 @@ function inflect(base) {
 
 // Gesture matcher: each base verb plus its regular inflections (see inflect()).
 function gestureMatcher(seed, opts = {}) {
-  const allow = new Set((Array.isArray(opts.allowWords) ? opts.allowWords : []).map(normalizeWord).filter(Boolean));
+  const allow = toWordSet(opts.allowWords);
   const extra = (Array.isArray(opts.extraWords) ? opts.extraWords : []).map(normalizeWord).filter(Boolean);
   const seen = new Set();
   const forms = [];
@@ -548,7 +554,7 @@ export function findGestures(text, opts = {}) {
   const gestures = [];
   if (matcher) {
     // Map each inflected surface form back to its base for tally grouping.
-    const allow = new Set((Array.isArray(opts.allowWords) ? opts.allowWords : []).map(normalizeWord).filter(Boolean));
+    const allow = toWordSet(opts.allowWords);
     const extra = (Array.isArray(opts.extraWords) ? opts.extraWords : []).map(normalizeWord).filter(Boolean);
     const formToBase = new Map();
     for (const b of [...GESTURE_WORDS, ...extra]) {

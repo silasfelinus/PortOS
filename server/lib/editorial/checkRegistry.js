@@ -5657,15 +5657,21 @@ export const EDITORIAL_CHECKS = [
       { key: 'extraWords', label: 'Extra participles to flag', type: 'text', help: 'Series-specific irregular participles the heuristic misses, e.g. "begun", "hewn" (comma-separated or one per line).' },
     ],
     gate: (ctx) => (ctx.manuscript || '').trim().length > 0,
-    run: (ctx) => runDensityCheck(ctx, {
-      scan: (text, cfg) => filterPassiveVoice(
-        findPassiveVoice(text, { allowWords: splitPhraseList(cfg?.allowWords), extraWords: splitPhraseList(cfg?.extraWords) }),
-        { suppressIntentional: cfg?.suppressIntentional !== false },
-      ),
-      noun: 'passive constructions',
-      problem: (count, rate, anchor) => `${count} passive construction${count === 1 ? '' : 's'} (e.g. "${anchor}") — about ${rate}/1000 words. Heavy passive voice distances the reader from who is acting.`,
-      suggestion: 'Rephrase to active voice where it sharpens the prose ("the door was opened by Sam" → "Sam opened the door"). Keep passive where the actor is unknown or beside the point.',
-    }),
+    run: (ctx) => {
+      // Parse the word lists once (not per section, the way the adverbs check
+      // hoists its own) — runDensityCheck calls scan() for every section.
+      const allowWords = splitPhraseList(ctx.config?.allowWords);
+      const extraWords = splitPhraseList(ctx.config?.extraWords);
+      return runDensityCheck(ctx, {
+        scan: (text, cfg) => filterPassiveVoice(
+          findPassiveVoice(text, { allowWords, extraWords }),
+          { suppressIntentional: cfg?.suppressIntentional !== false },
+        ),
+        noun: 'passive constructions',
+        problem: (count, rate, anchor) => `${count} passive construction${count === 1 ? '' : 's'} (e.g. "${anchor}") — about ${rate}/1000 words. Heavy passive voice distances the reader from who is acting.`,
+        suggestion: 'Rephrase to active voice where it sharpens the prose ("the door was opened by Sam" → "Sam opened the door"). Keep passive where the actor is unknown or beside the point.',
+      });
+    },
   },
   {
     id: 'prose.repeated-gestures',
