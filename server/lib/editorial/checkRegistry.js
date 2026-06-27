@@ -4083,6 +4083,20 @@ export const EDITORIAL_CHECKS = [
         // the final chunk even when it's packed to the window — reserve room by
         // trimming the final chunk's manuscript tail rather than silently dropping it
         // (mirrors arc.climax-agency / pacing.escalation-curve).
+        //
+        // Tradeoff (the reserve only bites when the manuscript spans many chunks AND
+        // the final chunk is packed to within the digest's size of the window — a
+        // single-chunk run, the common provider-fits-the-book case, has no digest and
+        // keeps the whole ending): trimming the final chunk's tail can clip the very
+        // end-state this check reads for a circular arc or a late regression. Reserve
+        // is still the right call because the START state and any EARLY resolution —
+        // the anchors a circular-arc / premature-closure verdict cannot be made
+        // without — live ONLY in the digest, while the ending is still mostly covered
+        // by the final chunk's HEAD plus the carried "latest state" the setupFocus
+        // rolls forward. Dropping the digest would keep the last few hundred chars of
+        // ending but lose the beginning, which is the worse failure for an arc-SHAPE
+        // judgment. The setupFocus below carries each character's start/peak/latest so
+        // the lag is one chunk, not the whole history.
         reserveSetupDigest: true,
         setupFocus: 'For each named character who carries an arc, track their progress so far as a '
           + 'short trajectory: their START state, the PEAK of their growth (the most-changed point '
