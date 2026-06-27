@@ -379,6 +379,14 @@ export async function seedReviewFromFindings(seriesId, findings, { runId = null,
           patch.sourceContentHash = match.sourceContentHash;
           refreshedCount += 1;
         }
+        // Adopt the run's subtype (#1626) so a finding first raised before the
+        // on-the-nose check sub-classified its output gains the label on the next
+        // run without the user having to clear it — the finding key is unchanged,
+        // so the merge path (not the append path) is the only place it can land.
+        if ((match.subtype ?? null) !== (c.subtype ?? null)) {
+          patch.subtype = match.subtype ?? null;
+          refreshedCount += 1;
+        }
       }
       if (Object.keys(patch).length === 0) return c;
       return sanitizeComment({ ...c, ...patch, updatedAt: now });

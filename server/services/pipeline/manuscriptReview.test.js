@@ -123,6 +123,25 @@ describe('manuscriptReview — record-event emission on write', () => {
     expect(merged.comments.find((c) => c.id === 'mrc-st').subtype).toBeNull();
   });
 
+  it('re-surfacing a finding adopts the run subtype on the existing comment (#1626)', async () => {
+    // A finding first raised BEFORE the on-the-nose check sub-classified its
+    // output — no subtype yet.
+    const seeded = await seedReviewFromFindings('ser-subtype-refresh', [
+      { checkId: 'dialogue.on-the-nose', category: 'dialogue', issueNumber: 3, problem: 'names the feeling', anchorQuote: 'I am angry' },
+    ]);
+    expect(seeded.comments[0].subtype).toBeNull();
+    const id = seeded.comments[0].id;
+
+    // The upgraded check re-reports the SAME finding (same key) now carrying a
+    // subtype — the merge path must adopt it onto the existing comment.
+    const next = await seedReviewFromFindings('ser-subtype-refresh', [
+      { checkId: 'dialogue.on-the-nose', category: 'dialogue', issueNumber: 3, subtype: 'emotion-tell', problem: 'names the feeling', anchorQuote: 'I am angry' },
+    ]);
+    const same = next.comments.find((c) => c.id === id);
+    expect(same).toBeDefined();
+    expect(same.subtype).toBe('emotion-tell');
+  });
+
   it('persists replacementStrategy (explicit value, derived from category, and legacy fallback)', async () => {
     const seeded = await seedReviewFromFindings('ser-4', [
       { category: 'comic-structure', problem: 'page is prose', suggestion: 'Panel 1 …', anchorQuote: 'PAGE 5' },
