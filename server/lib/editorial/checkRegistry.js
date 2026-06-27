@@ -5613,12 +5613,14 @@ export const EDITORIAL_CHECKS = [
       densityPer1000: z.number().min(0).max(80).default(15),
       maxFindings: z.number().int().min(1).max(50).default(20),
       allowWords: z.string().default(''),
+      extraWords: z.string().default(''),
       flagReportingTags: z.boolean().default(false),
     }),
     configFields: [
       { key: 'densityPer1000', label: 'Adverb rate to flag (per 1000 words)', type: 'number', min: 0, max: 80, step: 1, help: 'Flag a section whose -ly adverb frequency per 1000 words is at or above this.' },
       { key: 'maxFindings', label: 'Max findings per run', type: 'number', min: 1, max: 50, step: 1, help: 'Cap findings so a heavy draft can not flood the review.' },
       { key: 'allowWords', label: 'House-style allowlist', type: 'text', help: 'Adverbs to leave alone (comma-separated or one per line).' },
+      { key: 'extraWords', label: 'Extra adverbs to flag', type: 'text', help: 'Series-specific adverbs the -ly heuristic misses, e.g. "fast", "well", "hard" (comma-separated or one per line).' },
       { key: 'flagReportingTags', label: 'Also flag reporting tags', type: 'boolean', help: 'By default only emotion-telling dialogue tags ("said angrily") are flagged; reporting tags ("said quietly") are treated as invisible stage directions. Enable to flag every adverb-laden tag.' },
     ],
     gate: (ctx) => (ctx.manuscript || '').trim().length > 0,
@@ -5627,6 +5629,7 @@ export const EDITORIAL_CHECKS = [
       const max = cfg.maxFindings ?? 20;
       const density = cfg.densityPer1000 ?? 15;
       const allowWords = splitPhraseList(cfg.allowWords);
+      const extraWords = splitPhraseList(cfg.extraWords);
       // Reporting tags ("said quietly") read as invisible stage directions, so by
       // default only the emotion-telling bucket ("said angrily") trips the
       // higher-severity tag signal (#1592). Opt back into the old flag-every-tag
@@ -5639,7 +5642,7 @@ export const EDITORIAL_CHECKS = [
         const text = s?.content || '';
         const words = countWords(text);
         if (words === 0) continue;
-        const hits = findAdverbs(text, { allowWords });
+        const hits = findAdverbs(text, { allowWords, extraWords });
         if (!hits.length) continue;
         const rate = Math.round((hits.length / words) * 1000 * 10) / 10;
         const tagHits = hits.filter((h) => h.dialogueTag && (flagReportingTags || h.tagAdverbKind === 'emotion'));
@@ -5696,19 +5699,32 @@ export const EDITORIAL_CHECKS = [
       densityPer1000: z.number().min(0).max(50).default(10),
       maxFindings: z.number().int().min(1).max(50).default(20),
       suppressIntentional: z.boolean().default(true),
+      allowWords: z.string().default(''),
+      extraWords: z.string().default(''),
     }),
     configFields: [
       { key: 'densityPer1000', label: 'Passive-voice rate to flag (per 1000 words)', type: 'number', min: 0, max: 50, step: 1, help: 'Flag a section whose passive-construction frequency per 1000 words is at or above this. Advisory — passive voice is sometimes the right choice.' },
       { key: 'maxFindings', label: 'Max findings per run', type: 'number', min: 1, max: 50, step: 1, help: 'Cap findings so a heavy draft can not flood the review.' },
       { key: 'suppressIntentional', label: 'Suppress intentional passive', type: 'boolean', help: 'On by default — skip predicate-adjective states ("she was exhausted") and setting/weather mood images ("the sky was streaked"), which are rarely weak passive. Turn off to count every be-verb + participle (the raw heuristic).' },
+      { key: 'allowWords', label: 'House-style allowlist', type: 'text', help: 'Participles to never treat as passive — archaic/adjectival "-ed" forms like "blessed", "beloved" (comma-separated or one per line).' },
+      { key: 'extraWords', label: 'Extra participles to flag', type: 'text', help: 'Series-specific irregular participles the heuristic misses, e.g. "begun", "hewn" (comma-separated or one per line).' },
     ],
     gate: (ctx) => (ctx.manuscript || '').trim().length > 0,
-    run: (ctx) => runDensityCheck(ctx, {
-      scan: (text, cfg) => filterPassiveVoice(findPassiveVoice(text), { suppressIntentional: cfg?.suppressIntentional !== false }),
-      noun: 'passive constructions',
-      problem: (count, rate, anchor) => `${count} passive construction${count === 1 ? '' : 's'} (e.g. "${anchor}") — about ${rate}/1000 words. Heavy passive voice distances the reader from who is acting.`,
-      suggestion: 'Rephrase to active voice where it sharpens the prose ("the door was opened by Sam" → "Sam opened the door"). Keep passive where the actor is unknown or beside the point.',
-    }),
+    run: (ctx) => {
+      // Parse the word lists once (not per section, the way the adverbs check
+      // hoists its own) — runDensityCheck calls scan() for every section.
+      const allowWords = splitPhraseList(ctx.config?.allowWords);
+      const extraWords = splitPhraseList(ctx.config?.extraWords);
+      return runDensityCheck(ctx, {
+        scan: (text, cfg) => filterPassiveVoice(
+          findPassiveVoice(text, { allowWords, extraWords }),
+          { suppressIntentional: cfg?.suppressIntentional !== false },
+        ),
+        noun: 'passive constructions',
+        problem: (count, rate, anchor) => `${count} passive construction${count === 1 ? '' : 's'} (e.g. "${anchor}") — about ${rate}/1000 words. Heavy passive voice distances the reader from who is acting.`,
+        suggestion: 'Rephrase to active voice where it sharpens the prose ("the door was opened by Sam" → "Sam opened the door"). Keep passive where the actor is unknown or beside the point.',
+      });
+    },
   },
   {
     id: 'prose.repeated-gestures',
