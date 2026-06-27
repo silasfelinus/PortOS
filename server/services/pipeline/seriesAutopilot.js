@@ -92,7 +92,7 @@ import {
 import * as volumeBeatsRunner from './volumeBeatsRunner.js';
 import * as autoRunner from './autoRunner.js';
 import { seedReviewFromFindings, getReview } from './manuscriptReview.js';
-import { runEditorialChecks, buildEditorialCheckPlan, enabledChecksConsumeReverseOutline, summarizeCheckErrors } from './editorial/checkRunner.js';
+import { runEditorialChecks, buildEditorialCheckPlan, enabledChecksConsumeReverseOutline, buildReverseOutlineGateContext, summarizeCheckErrors } from './editorial/checkRunner.js';
 import { generateReverseOutline, getReverseOutline } from './reverseOutline.js';
 import { computeHealth, openBlockers, READINESS_GATES, resolveReadinessGate, summarizeEditorialBlockers, formatBlockerSummary } from './editorialScore.js';
 import { getSettings } from '../settings.js';
@@ -100,6 +100,7 @@ import { readReadinessGate } from '../../lib/editorial/index.js';
 import { generateManuscriptFix, acceptManuscriptFix } from './manuscriptFix.js';
 import { verifyComicScript } from './scriptVerify.js';
 import { checkSeriesCanonReadiness } from './canonReadiness.js';
+import { addNotification, removeByMetadata, NOTIFICATION_TYPES, PRIORITY_LEVELS } from '../notifications.js';
 
 // runs: Map<seriesId, { runId, clients[], lastPayload, cancelRequested, finished,
 //   cleanupTimer, startedAt, mode, options, runState, activeChild }>
@@ -158,6 +159,35 @@ export function resolveAutopilotRounds(options = {}, settings = null) {
 export function resolveAutopilotReadinessGate(options = {}, settings = null) {
   if (READINESS_GATES.includes(options?.readinessGate)) return options.readinessGate;
   return readReadinessGate(settings);
+}
+
+// Editorial-checks pause threshold (#1613): pause the run when the checks pass
+// surfaces ≥ N high-severity findings. 0 = off (the default), so the gate is
+// opt-in and existing installs are unchanged. Mirrors resolveAutopilotRounds —
+// per-run option wins, then the persisted setting, then 0. A non-integer at any
+// layer falls through to the next. Stamped onto run options once at start so the
+// loop and a later resume read the same effective threshold.
+export const DEFAULT_CHECK_FINDINGS_PAUSE_THRESHOLD = 0;
+export function resolveAutopilotCheckPauseThreshold(options = {}, settings = null) {
+  if (Number.isInteger(options?.checkFindingsPauseThreshold)) return options.checkFindingsPauseThreshold;
+  const pec = settings?.pipelineEditorialChecks || {};
+  if (Number.isInteger(pec?.checkFindingsPauseThreshold)) return pec.checkFindingsPauseThreshold;
+  return DEFAULT_CHECK_FINDINGS_PAUSE_THRESHOLD;
+}
+
+// Pause escalation (#1615): post an in-app notification (notification center,
+// surfaced in the header dropdown) when a run pauses, so a paused run doesn't sit
+// unnoticed until the user happens to open the status page. Unlike the other
+// gates this defaults ON — it's a zero-cost informational signal that directly
+// addresses the "paused runs go unnoticed" problem — but stays overridable per
+// run and via the persisted setting for users who don't want the noise. Boolean
+// at every layer: per-run option wins, then the persisted setting, then true.
+export const DEFAULT_NOTIFY_ON_PAUSE = true;
+export function resolveAutopilotNotifyOnPause(options = {}, settings = null) {
+  if (typeof options?.notifyOnPause === 'boolean') return options.notifyOnPause;
+  const pec = settings?.pipelineEditorialChecks || {};
+  if (typeof pec?.notifyOnPause === 'boolean') return pec.notifyOnPause;
+  return DEFAULT_NOTIFY_ON_PAUSE;
 }
 
 // Per-gate copy for the non-convergence pause — shared by the arc-verify and
@@ -549,6 +579,12 @@ export function cancelSeriesAutopilot(seriesId) {
   const run = runs.get(seriesId);
   if (!run || run.finished) return false;
   run.cancelRequested = true;
+  // Emit an immediate acknowledgement frame so the UI can switch to a
+  // "cancelling…" state right away. Cancellation is cooperative and checked
+  // between steps (the terminal `canceled` frame follows once the active
+  // step/LLM call returns) — without this ack the user sees no feedback until
+  // the loop unwinds, which can be the length of a long in-flight LLM call (#1617).
+  broadcastSse(run, { type: 'cancel:acknowledged', runId: run.runId, requestedAt: new Date().toISOString() });
   // Propagate to the currently-delegated child so cancel is responsive
   // mid-step instead of only between steps.
   const child = run.activeChild;
@@ -597,6 +633,39 @@ async function fileGap(record, sId, { gapKind, issueId = null, summary, context 
   if (result && !result.duplicate) {
     broadcast(sId, { type: 'gap:filed', gapKind, issueId, taskId: result.id });
   }
+}
+
+// Pause escalation (#1615): post an in-app notification when a run pauses so the
+// user is told actively, not only when they happen to open the status page. The
+// SSE `paused` frame still fires for an attached client; this is the persistent
+// out-of-band signal for a user who isn't watching. Opt-out via
+// `options.notifyOnPause` / the persisted setting (default on); never fires in
+// dry-run. Prior pause notifications for this series are cleared first so a
+// resume→pause cycle leaves exactly one current banner instead of a stack, and
+// the metadata field is series-scoped so removeByMetadata can't touch unrelated
+// notifications. Best-effort — a notification failure must never abort the run.
+// Drop any pause banner for this series. Called before posting a fresh one (so a
+// resume→pause cycle leaves exactly one) AND when a new execute run starts (so a
+// run resumed from a pause that then completes/errors doesn't leave a stale
+// "paused" banner + dead resume link). Series-scoped metadata so it can't touch
+// unrelated notifications. Best-effort.
+async function clearPauseNotice(sId) {
+  await removeByMetadata('autopilotPauseSeriesId', sId).catch(() => {});
+}
+
+async function notifyPause(record, sId, { reason, pauseKind = null, currentStep = null }) {
+  if (record.options.notifyOnPause === false || record.mode !== 'execute') return;
+  const series = await getSeries(sId).catch(() => null);
+  const seriesName = series?.name || 'a series';
+  await clearPauseNotice(sId);
+  await addNotification({
+    type: NOTIFICATION_TYPES.AUTOPILOT_PAUSED,
+    title: `Autopilot paused — ${seriesName}`,
+    description: reason || 'The run paused and needs human review before it can continue.',
+    priority: PRIORITY_LEVELS.HIGH,
+    link: `/pipeline/series/${sId}`,
+    metadata: { autopilotPauseSeriesId: sId, runId: record.runId, pauseKind, currentStep },
+  }).catch((err) => { console.log(`⚠️ autopilot: pause notification failed for ${sId.slice(0, 12)}: ${err.message}`); });
 }
 
 // Series Autopilot threads BOTH its run provider AND its run model as SOFT
@@ -1030,10 +1099,12 @@ const editorialSubsetIds = (options) =>
 async function runReverseOutlineRefresh(sId, record) {
   if (record.cancelRequested) return { canceled: true };
   const settings = await getSettings();
-  // Gate 1 — does any enabled check (narrowed to this run's subset) even read the
-  // outline? If not, nothing to do — and a subset that skips outline-consuming
-  // checks must not pay for a refresh those checks would have triggered.
-  if (!enabledChecksConsumeReverseOutline(settings, editorialSubsetIds(record.options))) {
+  const checkIds = editorialSubsetIds(record.options);
+  // Gate 1 — sources-only pre-filter: does any enabled check (narrowed to this
+  // run's subset) even DECLARE the outline as a source? If not, nothing to do —
+  // and a subset that skips outline-consuming checks must not pay for a refresh
+  // those checks would have triggered.
+  if (!enabledChecksConsumeReverseOutline(settings, checkIds)) {
     record.runState.reverseOutlineRefreshed = true;
     return {};
   }
@@ -1048,20 +1119,51 @@ async function runReverseOutlineRefresh(sId, record) {
     record.runState.reverseOutlineRefreshed = true;
     return {};
   }
+  // Gate 3 (#1614) — gate-aware consumption. A check that DECLARES the outline as
+  // a source still won't run if its runtime gate declines for this series (e.g. a
+  // canon-less roster). Evaluate each consumer's gate against the current outline
+  // and skip the refresh when none would run. Gate on SCENE PRESENCE, not
+  // `status`: the precondition is "there's scene content to evaluate gates
+  // against" — a never-generated (`status:'none'`) or empty outline has none, so
+  // we bootstrap the first generation unconditionally rather than chicken-and-egg
+  // ourselves out of it. enabledChecksConsumeReverseOutline only trusts a
+  // DECLINING gate that didn't read the outline (the refresh regenerates it, so
+  // an outline-content gate's stale verdict can't be trusted and keeps the check
+  // a consumer) — so a scoped run of only outline-gated checks still refreshes.
+  if (Array.isArray(current.scenes) && current.scenes.length > 0) {
+    const gateCtx = await buildReverseOutlineGateContext(sId, { outline: current }).catch(() => null);
+    if (gateCtx && !enabledChecksConsumeReverseOutline(settings, checkIds, gateCtx)) {
+      record.runState.reverseOutlineRefreshed = true;
+      return {};
+    }
+  }
   // A regenerate WILL spend one LLM call — gate the budget and bill, like the
   // other LLM passes. Bridge autopilot cancellation into the stage's AbortSignal.
   const beforeRefresh = await budgetPause();
   if (beforeRefresh) return beforeRefresh;
   const signal = { get aborted() { return record.cancelRequested; } };
-  const result = await generateReverseOutline(sId, { ...providerIdOpts(record), force: false, signal })
+  const regen = (force) => generateReverseOutline(sId, { ...providerIdOpts(record), force, signal })
     .catch((err) => {
       console.log(`⚠️ autopilot: reverse-outline refresh failed for ${sId.slice(0, 12)}: ${err.message}`);
       return null;
     });
+  let result = await regen(false);
   // Canceled mid-pass — don't bill, don't mark refreshed; let the loop unwind.
   if (result?.status === 'canceled' || record.cancelRequested) return { canceled: true };
+  // (#1614) A `cached:true` result means the manuscript hash still matched the
+  // stored outline at generate time. Re-confirm staleness against the LIVE
+  // manuscript within this run: if a concurrent edit moved the manuscript again
+  // after that cache check, the cached outline is now stale and the downstream
+  // checks would read it — force exactly one regen so they don't.
+  if (result?.cached === true) {
+    const after = await getReverseOutline(sId).catch(() => null);
+    if (after?.stale === true) {
+      result = await regen(true);
+      if (result?.status === 'canceled' || record.cancelRequested) return { canceled: true };
+    }
+  }
   // Bill ONLY when the call actually regenerated (an LLM run). A `cached` result
-  // (outline went fresh in the race window) or a `no-content` series spent nothing.
+  // (outline still fresh in the race window) or a `no-content` series spent nothing.
   // No verify:round broadcast here — a refresh isn't a review round (it produces
   // scenes, not findings); the conductor's generic step:start/step:complete already
   // surface "Refreshing scene segmentation…" / "done" to the UI.
@@ -1118,9 +1220,40 @@ async function runEditorialChecksPass(sId, record) {
     // can flag a partial failure (no silent "complete").
     const { errored, erroredCheckIds } = summarizeCheckErrors(result.perCheck);
     erroredCheckIds.forEach((id) => record.runState.editorialCheckErroredIds.add(id));
-    broadcast(sId, { type: 'verify:round', scope: 'editorialChecks', round: 1, findings: result.findings.length, blocking: 0, errored, erroredCheckIds });
+    // #1613 — count the high-severity findings this pass surfaced. The round frame
+    // previously hardcoded `blocking: 0`, which made a 50-high-finding pass look
+    // "complete" — the misleading per-step signal the issue calls out. Report the
+    // real high count so the step's `blocking` matches what it found, whether or
+    // not the optional pause gate is armed.
+    const highFindings = result.findings.filter((f) => f.severity === 'high');
+    broadcast(sId, { type: 'verify:round', scope: 'editorialChecks', round: 1, findings: result.findings.length, blocking: highFindings.length, errored, erroredCheckIds });
     if (errored) {
       console.error(`❌ autopilot: ${errored} editorial check(s) errored — series=${sId.slice(0, 12)} ${erroredCheckIds.join(', ')}`);
+    }
+    // #1613 — optional gate: when armed (threshold > 0) and the pass surfaced at
+    // least that many high findings, PAUSE for human review instead of silently
+    // proceeding to the health gate. Off by default (threshold 0), so existing
+    // runs are unchanged. Do NOT mark the step reviewed — a resume re-runs the
+    // checks and reconciles (like the health gate), so once the human reduces the
+    // high findings below the threshold (or lowers it) the run continues.
+    const threshold = record.options.checkFindingsPauseThreshold || 0;
+    if (threshold > 0 && highFindings.length >= threshold) {
+      // Editorial findings already carry severity/location/problem (manuscriptReview
+      // sanitizes them), so the residual uses the same shape as the other pauses;
+      // keep checkId so the UI can link a residual back to the check that raised it.
+      const residual = highFindings.map((f) => ({
+        severity: f.severity, // already filtered to 'high' — carry it rather than re-asserting
+        location: f.location || (f.checkId ? `check ${f.checkId}` : 'manuscript'),
+        problem: f.problem || 'high-severity editorial finding',
+        checkId: f.checkId,
+      }));
+      console.log(`🚦 editorial checks gate — series=${sId.slice(0, 12)} ${highFindings.length} high finding(s) ≥ threshold ${threshold}, pausing for review`);
+      return {
+        pause: true,
+        pauseKind: 'checkFindings',
+        reason: `Editorial checks surfaced ${highFindings.length} high-severity finding(s) (≥ threshold ${threshold}) — paused for review. Address them in the manuscript editor, or raise the editorial-check pause threshold above ${highFindings.length} (set it to 0 to disable) in Options and resume.`,
+        residual,
+      };
     }
   }
   record.runState.editorialChecksReviewed = true;
@@ -1487,10 +1620,14 @@ function buildDryRunPlan(series, issues, options, costContext = {}) {
     const checksNote = editorialSubset
       ? `per-run subset of ${editorialSubset.length} editorial check(s) (#1575)`
       : 'enabled editorial checks (#1284)';
+    // Surface the optional pause threshold (#1613) when armed, mirroring how the
+    // readiness gate is exposed below — so a per-run override is visible in the plan.
+    const pauseThreshold = resolveAutopilotCheckPauseThreshold(options);
+    const pauseNote = pauseThreshold > 0 ? ` — pauses at ≥ ${pauseThreshold} high finding(s) (#1613)` : '';
     plan.push({
       kind: 'editorialChecks',
       count: 1,
-      note: llmCheckCount > 0 ? `${checksNote} — ~${estLlmCalls} LLM call(s)` : checksNote,
+      note: (llmCheckCount > 0 ? `${checksNote} — ~${estLlmCalls} LLM call(s)` : checksNote) + pauseNote,
       estActions: llmCheckCount > 0 ? 1 : 0,
       estLlmCalls,
     });
@@ -1542,6 +1679,8 @@ export async function startSeriesAutopilot(sId, options = {}) {
     ...options,
     ...resolveAutopilotRounds(options, settings),
     readinessGate: resolveAutopilotReadinessGate(options, settings),
+    checkFindingsPauseThreshold: resolveAutopilotCheckPauseThreshold(options, settings),
+    notifyOnPause: resolveAutopilotNotifyOnPause(options, settings),
   };
 
   if (existing) {
@@ -1621,6 +1760,9 @@ export async function startSeriesAutopilot(sId, options = {}) {
       const series0 = await getSeries(sId);
       broadcast(sId, { type: 'start', runId, mode, target: series0.targetFormat });
       await persistMarker(sId, { status: 'running', runId, currentStep: null, residualFindings: [], lastError: null });
+      // A resume is a fresh start: drop any stale pause banner up front so a run
+      // that completes/errors without re-pausing doesn't leave a dead resume link.
+      await clearPauseNotice(sId);
       if (runOptions.includeVisual && !VISUAL_DRAFT_ENABLED) {
         broadcast(sId, { type: 'note', message: 'Draft visual rendering is not enabled in this build — running to text-ready + editorial review.' });
       }
@@ -1679,8 +1821,10 @@ export async function startSeriesAutopilot(sId, options = {}) {
         if (!selfGatingStep && !zeroRoundSkip) {
           const budget = await getDomainBudgetStatus('cos');
           if (!budget.withinBudget) {
-            await persistMarker(sId, { status: 'paused', runId, currentStep: step.kind, lastError: `daily cos ${budget.exceeded} budget reached` });
-            broadcast(sId, { type: 'paused', runId, reason: `daily cos ${budget.exceeded} budget reached`, completedAt: new Date().toISOString() });
+            const budgetReason = `daily cos ${budget.exceeded} budget reached`;
+            await persistMarker(sId, { status: 'paused', runId, currentStep: step.kind, lastError: budgetReason });
+            broadcast(sId, { type: 'paused', runId, reason: budgetReason, completedAt: new Date().toISOString() });
+            await notifyPause(record, sId, { reason: budgetReason, pauseKind: 'budget', currentStep: step.kind });
             console.log(`⏸️  autopilot paused (budget) — series=${sId.slice(0, 12)} after ${ordinal} steps`);
             return;
           }
@@ -1696,6 +1840,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
         if (result?.pause) {
           await persistMarker(sId, { status: 'paused', runId, currentStep: step.kind, residualFindings: result.residual || [], lastError: result.reason, pauseKind: result.pauseKind || null, healthBreakdown: result.healthBreakdown || null });
           broadcast(sId, { type: 'paused', runId, scope: step.kind, reason: result.reason, residualFindings: result.residual || [], pauseKind: result.pauseKind || null, healthBreakdown: result.healthBreakdown || null, completedAt: new Date().toISOString() });
+          await notifyPause(record, sId, { reason: result.reason, pauseKind: result.pauseKind || null, currentStep: step.kind });
           // Only file the generic stalled task when the step didn't already file
           // a more specific gap (canon-undescribed, visual-no-pages, …) — else
           // fileGaps would create two CoS tasks for one underlying problem (the
