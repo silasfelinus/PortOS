@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const store = {
   getBoard: vi.fn(),
   setPinterestLink: vi.fn(),
+  healPinterestFeed: vi.fn(),
   clearPinterestLink: vi.fn(),
   appendPinterestItems: vi.fn(),
 };
@@ -137,6 +138,69 @@ describe('syncPinterestBoard', () => {
 
     await syncPinterestBoard('mb-1');
     expect(store.appendPinterestItems.mock.calls[0][2]).toMatchObject({ expectedFeedUrl: 'https://www.pinterest.com/j/b.rss' });
+  });
+
+  it('self-heals a stored section feed to the parent board feed, then syncs against it', async () => {
+    // A section link saved before section detection: feed points at the section
+    // .rss (HTML, 0 pins); boardUrl retains the section path.
+    store.getBoard.mockResolvedValue({
+      id: 'mb-1',
+      items: [],
+      pinterest: { feedUrl: 'https://www.pinterest.com/j/b/sec.rss', boardUrl: 'https://www.pinterest.com/j/b/sec/' },
+    });
+    // The guarded heal returns the corrected, board-level feed.
+    store.healPinterestFeed.mockResolvedValue({
+      board: { id: 'mb-1', items: [], pinterest: { feedUrl: 'https://www.pinterest.com/j/b.rss', boardUrl: 'https://www.pinterest.com/j/b/sec/' } },
+      changed: true,
+    });
+    net.fetchPublicText.mockResolvedValue(feedXml(PIN1));
+    net.fetchPublicBinary.mockResolvedValue({ buffer: Buffer.from([0xff, 0xd8, 0xff, 0x00]), contentType: 'image/jpeg' });
+    store.appendPinterestItems.mockImplementation(async (_id, imported) => ({ board: { id: 'mb-1' }, added: imported.length }));
+
+    await syncPinterestBoard('mb-1');
+    expect(store.healPinterestFeed).toHaveBeenCalledWith('mb-1', {
+      fromFeedUrl: 'https://www.pinterest.com/j/b/sec.rss',
+      feedUrl: 'https://www.pinterest.com/j/b.rss',
+      boardUrl: 'https://www.pinterest.com/j/b/sec/',
+    });
+    // Fetch + the append guard both use the healed (board-level) feed.
+    expect(net.fetchPublicText).toHaveBeenCalledWith('https://www.pinterest.com/j/b.rss', expect.anything());
+    expect(store.appendPinterestItems.mock.calls[0][2]).toMatchObject({ expectedFeedUrl: 'https://www.pinterest.com/j/b.rss' });
+  });
+
+  it('aborts (no fetch) when a concurrent unlink wins the heal race', async () => {
+    store.getBoard.mockResolvedValue({
+      id: 'mb-1',
+      items: [],
+      pinterest: { feedUrl: 'https://www.pinterest.com/j/b/sec.rss', boardUrl: 'https://www.pinterest.com/j/b/sec/' },
+    });
+    // User unlinked concurrently: the guarded heal didn't write and the board is now unlinked.
+    store.healPinterestFeed.mockResolvedValue({ board: { id: 'mb-1', items: [] }, changed: false });
+
+    const result = await syncPinterestBoard('mb-1');
+    expect(result).toMatchObject({ aborted: true, added: 0 });
+    expect(net.fetchPublicText).not.toHaveBeenCalled();
+    expect(store.appendPinterestItems).not.toHaveBeenCalled();
+  });
+
+  it('aborts (no fetch) when a concurrent repoint wins the heal race', async () => {
+    store.getBoard.mockResolvedValue({
+      id: 'mb-1',
+      items: [],
+      pinterest: { feedUrl: 'https://www.pinterest.com/j/b/sec.rss', boardUrl: 'https://www.pinterest.com/j/b/sec/' },
+    });
+    // User repointed to a DIFFERENT board mid-heal: guard didn't write; the
+    // persisted feed is neither the section nor the healed board feed.
+    store.healPinterestFeed.mockResolvedValue({
+      board: { id: 'mb-1', items: [], pinterest: { feedUrl: 'https://www.pinterest.com/other/board.rss', boardUrl: 'https://www.pinterest.com/other/board/' } },
+      changed: false,
+    });
+
+    const result = await syncPinterestBoard('mb-1');
+    expect(result).toMatchObject({ aborted: true, added: 0 });
+    // Must NOT silently sync the user's newly-repointed feed.
+    expect(net.fetchPublicText).not.toHaveBeenCalled();
+    expect(store.appendPinterestItems).not.toHaveBeenCalled();
   });
 
   it('skips a pin whose download returns a non-image body', async () => {
