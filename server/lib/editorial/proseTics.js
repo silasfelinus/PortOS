@@ -318,18 +318,21 @@ function isLyAdverb(lower) {
  * bucket on tags by default.
  *
  * @param {string} text
- * @param {{ allowWords?: string[] }} [opts] allowWords mutes specific adverbs.
+ * @param {{ allowWords?: string[], extraWords?: string[] }} [opts] allowWords mutes
+ *   specific adverbs; extraWords flags series-specific words that the `-ly`
+ *   heuristic misses (irregular adverbs like "fast"/"well"/"hard").
  * @returns {Array<{ word: string, index: number, anchor: string, dialogueTag: boolean, tagAdverbKind: ('reporting'|'emotion'|null) }>}
  */
 export function findAdverbs(text, opts = {}) {
   const tokens = tokenizeWords(text);
   if (!tokens.length) return [];
   const allow = new Set((Array.isArray(opts.allowWords) ? opts.allowWords : []).map(normalizeWord).filter(Boolean));
+  const extra = new Set((Array.isArray(opts.extraWords) ? opts.extraWords : []).map(normalizeWord).filter(Boolean));
   const tagSet = new Set(DIALOGUE_TAGS);
   const out = [];
   for (let i = 0; i < tokens.length; i += 1) {
     const t = tokens[i];
-    if (!isLyAdverb(t.lower) || allow.has(t.lower)) continue;
+    if ((!isLyAdverb(t.lower) && !extra.has(t.lower)) || allow.has(t.lower)) continue;
     const prev = i > 0 ? tokens[i - 1].lower : '';
     const dialogueTag = tagSet.has(prev);
     const tagAdverbKind = dialogueTag
@@ -405,12 +408,21 @@ function hasSettingSubject(tokens, i) {
  * an intervening adverb, "decorated elaborately by Mira").
  *
  * @param {string} text
+ * @param {{ allowWords?: string[], extraWords?: string[] }} [opts] allowWords mutes
+ *   participles a series never wants flagged (archaic/house-style "-ed" forms read
+ *   as adjectives — "blessed", "beloved"); extraWords adds domain-specific irregular
+ *   participles the "-ed"/known-irregular heuristic misses ("begun", "hewn").
  * @returns {Array<{ index: number, anchor: string, be: string, participle: string, classification: ('weak'|'stative'|'mood'), byAgent: boolean }>}
  */
-export function findPassiveVoice(text) {
+export function findPassiveVoice(text, opts = {}) {
   const tokens = tokenizeWords(text);
   if (!tokens.length) return [];
   const beSet = new Set(BE_VERBS);
+  const allow = new Set((Array.isArray(opts.allowWords) ? opts.allowWords : []).map(normalizeWord).filter(Boolean));
+  const extra = new Set((Array.isArray(opts.extraWords) ? opts.extraWords : []).map(normalizeWord).filter(Boolean));
+  // A participle is recognized when the heuristic OR a series `extraWords` entry
+  // matches, unless the series allow-listed it.
+  const isParticiple = (lower) => (isPastParticiple(lower) || extra.has(lower)) && !allow.has(lower);
   const out = [];
   for (let i = 0; i < tokens.length; i += 1) {
     if (!beSet.has(tokens[i].lower)) continue;
@@ -418,7 +430,7 @@ export function findPassiveVoice(text) {
     let j = i + 1;
     let skipped = 0;
     while (j < tokens.length && skipped < 2 && isLyAdverb(tokens[j].lower)) { j += 1; skipped += 1; }
-    if (j < tokens.length && isPastParticiple(tokens[j].lower) && !beSet.has(tokens[j].lower)) {
+    if (j < tokens.length && isParticiple(tokens[j].lower) && !beSet.has(tokens[j].lower)) {
       const start = tokens[i].index;
       const end = tokens[j].index + tokens[j].word.length;
       const participle = tokens[j].lower;

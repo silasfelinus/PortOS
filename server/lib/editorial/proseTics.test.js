@@ -168,6 +168,18 @@ describe('findAdverbs', () => {
     const hits = findAdverbs('She ran quickly.', { allowWords: ['quickly'] });
     expect(hits).toEqual([]);
   });
+
+  it('flags non-ly adverbs supplied via extraWords', () => {
+    // "fast" is a real adverb the -ly heuristic misses; the series can add it.
+    expect(findAdverbs('She ran fast.')).toEqual([]);
+    const hits = findAdverbs('She ran fast.', { extraWords: ['fast'] });
+    expect(hits.map((h) => h.word.toLowerCase())).toContain('fast');
+  });
+
+  it('allowWords still wins over an extraWords entry', () => {
+    const hits = findAdverbs('She ran fast.', { extraWords: ['fast'], allowWords: ['fast'] });
+    expect(hits).toEqual([]);
+  });
 });
 
 describe('findPassiveVoice', () => {
@@ -253,6 +265,24 @@ describe('findPassiveVoice', () => {
     const [hit] = findPassiveVoice('She was exhausted. By morning the fog had lifted.');
     expect(hit.byAgent).toBe(false);
     expect(hit.classification).toBe('stative');
+  });
+
+  it('mutes an allow-listed participle (archaic/adjectival -ed form)', () => {
+    // "blessed" trips the bare -ed heuristic; a series can allow-list it.
+    expect(findPassiveVoice('She was blessed.').map((h) => h.participle)).toContain('blessed');
+    expect(findPassiveVoice('She was blessed.', { allowWords: ['blessed'] })).toEqual([]);
+  });
+
+  it('recognizes a series-specific irregular participle via extraWords', () => {
+    // "hewn" is an irregular participle the -ed/known-irregular heuristic misses.
+    expect(findPassiveVoice('The beam was hewn from oak.')).toEqual([]);
+    const hits = findPassiveVoice('The beam was hewn from oak.', { extraWords: ['hewn'] });
+    expect(hits.map((h) => h.participle)).toContain('hewn');
+  });
+
+  it('allowWords wins over extraWords for participle recognition', () => {
+    const hits = findPassiveVoice('The beam was hewn.', { extraWords: ['hewn'], allowWords: ['hewn'] });
+    expect(hits).toEqual([]);
   });
 });
 

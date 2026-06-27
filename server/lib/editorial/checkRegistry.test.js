@@ -4693,6 +4693,16 @@ describe('copy-edit prose-tic bundle (#1306)', () => {
     expect(/adverb-laden/i.test(tag.problem)).toBe(true);
   });
 
+  it('prose.adverbs flags an extraWords adverb the -ly heuristic misses', () => {
+    // "fast" is a real adverb without an -ly suffix; a series adds it via extraWords.
+    const sections = [{ number: 4, content: 'He ran fast. She ran fast. They drove fast.' }];
+    const off = getCheck(ADVERBS).run({ sections, config: { densityPer1000: 0 }, severityDefault: 'low' });
+    expect(off).toEqual([]);
+    const on = getCheck(ADVERBS).run({ sections, config: { densityPer1000: 0, extraWords: 'fast' }, severityDefault: 'low' });
+    expect(on).toHaveLength(1);
+    expect(on[0].anchorQuote.toLowerCase()).toBe('fast');
+  });
+
   it('prose.passive-voice flags above the rate threshold', () => {
     const sections = [{ number: 1, content: 'The door was opened. The vase was broken. It was forgotten.' }];
     const findings = getCheck(PASSIVE).run({ sections, config: { densityPer1000: 0 }, severityDefault: 'low' });
@@ -4709,6 +4719,24 @@ describe('copy-edit prose-tic bundle (#1306)', () => {
     // With the context tuning off, the raw heuristic counts all three.
     const raw = getCheck(PASSIVE).run({ sections, config: { densityPer1000: 0, suppressIntentional: false }, severityDefault: 'low' });
     expect(/3 passive constructions/.test(raw[0].problem)).toBe(true);
+  });
+
+  it('prose.passive-voice mutes an allow-listed participle', () => {
+    // "was blessed" trips the raw heuristic; allow-listing it silences the check.
+    const sections = [{ number: 1, content: 'She was blessed. He was blessed. They were blessed.' }];
+    const raw = getCheck(PASSIVE).run({ sections, config: { densityPer1000: 0, suppressIntentional: false }, severityDefault: 'low' });
+    expect(raw).toHaveLength(1);
+    const allowed = getCheck(PASSIVE).run({ sections, config: { densityPer1000: 0, suppressIntentional: false, allowWords: 'blessed' }, severityDefault: 'low' });
+    expect(allowed).toEqual([]);
+  });
+
+  it('prose.passive-voice recognizes a series-specific irregular participle via extraWords', () => {
+    const sections = [{ number: 1, content: 'The beam was hewn. The post was hewn. The plank was hewn by hand.' }];
+    const off = getCheck(PASSIVE).run({ sections, config: { densityPer1000: 0, suppressIntentional: false }, severityDefault: 'low' });
+    expect(off).toEqual([]);
+    const on = getCheck(PASSIVE).run({ sections, config: { densityPer1000: 0, suppressIntentional: false, extraWords: 'hewn' }, severityDefault: 'low' });
+    expect(on).toHaveLength(1);
+    expect(/passive/i.test(on[0].problem)).toBe(true);
   });
 
   it('prose.repeated-gestures tallies a gesture across the manuscript and flags body-part autonomy', () => {
