@@ -219,6 +219,19 @@ export const INFO_DUMPING_STAGE = 'pipeline-editorial-info-dumping';
 export const OBJECT_MOTIVATION_STAGE = 'pipeline-editorial-object-motivation';
 export const OBJECT_BACKSTORY_STAGE = 'pipeline-editorial-object-backstory';
 
+// Stage name for the object weight-proportionality LLM check (#1624): judges
+// whether an object's narrative weight (established backstory + payoff depth)
+// matches its prominence in the prose — flagging a minor object given a heavy
+// backstory ("a one-line locket with a 3-issue origin") or a climactic object
+// with no lineage to earn it ("a heirloom that decides the finale, never set
+// up"). Ships in data.reference/prompts/stages/ + stage-config.json (fresh
+// installs via setup-data.js) and migrates to existing installs via migration
+// 143 (boot runs migrations but NOT setup-data, so the migration is required).
+// Like the two object-attachment checks above it feeds the canon's per-object
+// significance/attachment summary as context and reads the stitched manuscript
+// to weigh prose prominence against that established weight.
+export const OBJECT_WEIGHT_STAGE = 'pipeline-editorial-object-weight-proportionality';
+
 // Stage name for the style-guide conformance LLM check (#1303). Ships in
 // data.reference/prompts/stages/ + stage-config.json (fresh installs via
 // setup-data.js) and migrates to existing installs via migration 096 (boot runs
@@ -5071,6 +5084,60 @@ export const EDITORIAL_CHECKS = [
         category: 'continuity',
         max: ctx.config?.maxFindings ?? 12,
         withIssueNumber: false,
+      });
+    },
+  },
+  {
+    id: 'objects.weight-proportionality',
+    sources: ['manuscript', 'canon'],
+    label: 'Object narrative-weight proportionality',
+    description:
+      'LLM check — flags objects whose narrative weight is disproportionate to their prominence: a minor item the prose barely uses yet given a heavy backstory or significance ("a one-line locket with a three-issue origin"), or a climactic / decisive object with little or no established lineage to earn its weight ("an heirloom that resolves the finale, never set up"). Weighs each object\'s prominence in the manuscript against the depth of backstory and payoff established for it — the canon\'s recorded significance/attachments plus what the prose itself plants and pays off. Distinct from objects.unattached-significant (presence of an attachment), objects.unmotivated-interaction (a single unmotivated beat), and objects.backstory-consistency (an origin that contradicts a character\'s background) — the gap here is the over- or under-writing of plot machinery.',
+    scope: 'series',
+    kind: 'llm',
+    category: 'plot',
+    severityDefault: 'low',
+    // Reads the stitched manuscript corpus — so the runner only pays the
+    // section-collection I/O when a manuscript-consuming check is enabled.
+    needsManuscript: true,
+    configSchema: z.object({
+      // Cap findings per run so a large object roster can't flood the review.
+      maxFindings: z.number().int().min(1).max(50).default(12),
+    }),
+    configFields: [
+      {
+        key: 'maxFindings',
+        label: 'Max findings per run',
+        type: 'number',
+        min: 1,
+        max: 50,
+        step: 1,
+        help: 'Cap findings so a large object roster can not flood the review.',
+      },
+    ],
+    gate: (ctx) => (ctx.manuscript || '').trim().length > 0,
+    run: (ctx) => {
+      // The per-object canon summary (established significance + attachments) is
+      // fixed per-call overhead re-sent on each chunk — trimmed by the runner to
+      // keep the manuscript a budget floor.
+      const objects = describeObjectAttachments(ctx);
+      return runManuscriptLlmCheck(ctx, {
+        stage: OBJECT_WEIGHT_STAGE,
+        category: 'plot',
+        context: { objects },
+        buildVars: (manuscript, _meta, c) => ({ manuscript, objects: c.objects }),
+        // An object's backstory can be planted in an early chapter and its
+        // prominence (or payoff) land much later; the findings digest stops a
+        // later chunk re-flagging the same imbalance the prose only half-shows.
+        crossChunkDigest: true,
+        // …and a cleanly proportioned object produces no finding, so the findings
+        // digest alone can't carry it forward — roll a setup summary of each
+        // object and the backstory/significance the prose has established so a
+        // late payoff is weighed against the full lineage, not just its chunk.
+        crossChunkSetup: true,
+        setupFocus: 'Objects/items the story features, how prominent or decisive each one is, and the depth '
+          + 'of backstory, lineage, or significance the prose or canon has established for it (so a later '
+          + 'payoff is weighed against the full established weight, not just the current part).',
       });
     },
   },
