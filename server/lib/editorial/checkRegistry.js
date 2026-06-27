@@ -328,6 +328,18 @@ export const WHITE_ROOM_STAGE = 'pipeline-editorial-white-room';
 // per-character arcs to surface genuine change moments + flat-arc warnings.
 export const ARC_TRANSITIONS_STAGE = 'pipeline-editorial-arc-transitions';
 
+// Stage name for the character-arc regression / premature-closure LLM check
+// (#1619). Ships in data.reference/prompts/stages/ + stage-config.json (fresh
+// installs via setup-data.js) and migrates to existing installs via migration 141
+// (boot runs migrations but NOT setup-data, so the migration is required). Reads
+// the stitched manuscript plus the reverse-outline scene map and the AUTHORED
+// per-character arcs, tracks each character's progress across the issues, and
+// flags regression (growth then an unmotivated revert), a circular arc (ends
+// where it began), or premature closure (an arc resolved early then flat for the
+// rest of the series). Complements arc.transitions (which detects the change
+// MOMENTS) by judging the SHAPE of each character's progress across the whole arc.
+export const ARC_REGRESSION_STAGE = 'pipeline-editorial-arc-regression';
+
 // Stage name for the telling-not-showing-emotion LLM check (#1306). Ships in
 // data.reference/prompts/stages/ + stage-config.json (fresh installs via
 // setup-data.js) and migrates to existing installs via migration 110 (boot runs
@@ -3996,6 +4008,104 @@ export const EDITORIAL_CHECKS = [
         crossChunkSetup: true,
         setupFocus:
           'For each named character, note any genuine change moment so far (a decision, realization, point of no return, relapse, or sacrifice) and where it landed. Carry forward who has changed and who is still flat, so a later chunk can tell a truly flat arc from one whose turn simply has not arrived yet.',
+      });
+    },
+  },
+  {
+    id: 'arc.regression',
+    sources: ['manuscript', 'reverseOutline', 'series.characterArcs'],
+    label: 'Character-arc regression / premature closure',
+    description:
+      'LLM scan of the SHAPE of each character\'s progress across the whole series — not the change moments themselves (that is arc.transitions) but whether the arc holds together end to end. Flags an unmotivated REGRESSION (a character grows, then reverts to their old self with no purpose or earned reason — distinct from a deliberate, dramatized relapse), a CIRCULAR arc (the character ends in the same state they began, the growth cancelled out with nothing gained), and PREMATURE CLOSURE (the arc fully resolves early — e.g. issue 3 of 10 — and the character is flat for the rest of the series, deflating the back half). Reads the stitched manuscript plus the reverse-outline scene map and the AUTHORED per-character arcs (series.characterArcs) to reconcile the planned end-state against what the prose delivers; degrades to a whole-manuscript scan when no outline or authored arcs exist. Whole-arc verdicts are gated to the final manuscript part so a mid-arc character whose later growth is still ahead is not false-flagged.',
+    scope: 'series',
+    kind: 'llm',
+    category: 'arc',
+    severityDefault: 'medium',
+    defaultEnabled: true,
+    // Reads the stitched manuscript corpus — so the runner only pays the
+    // section-collection I/O when a manuscript-consuming check is enabled.
+    needsManuscript: true,
+    configSchema: z.object({
+      // Cap findings per run so a long manuscript can't flood the review.
+      maxFindings: z.number().int().min(1).max(50).default(12),
+    }),
+    configFields: [
+      {
+        key: 'maxFindings',
+        label: 'Max findings per run',
+        type: 'number',
+        min: 1,
+        max: 50,
+        step: 1,
+        help: 'Cap findings so a long manuscript can not flood the review.',
+      },
+    ],
+    gate: (ctx) => (ctx.manuscript || '').trim().length > 0,
+    run: (ctx) => {
+      // Both blocks are fixed per-call overhead (re-sent on each chunk) and pure
+      // context: the authored arcs name each character's planned start → end state
+      // so the model can tell a regression/circular arc from the intended ending,
+      // and the scene map lets it attribute a finding to a scene + issue. The check
+      // degrades gracefully — no authored arcs ⇒ {{#characterArcs}} renders nothing
+      // and the model judges the arc shape from the prose alone; no outline ⇒
+      // {{#sceneMap}} renders nothing.
+      const characterArcs = renderCharacterArcsForPrompt(ctx.series?.characterArcs) || '';
+      const sceneMap = sceneGroundingSummary(ctx.reverseOutline);
+      return runManuscriptLlmCheck(ctx, {
+        stage: ARC_REGRESSION_STAGE,
+        category: 'arc',
+        // sceneMap grows unbounded with scene count; characterArcs is bounded by the
+        // roster — so largest-first trimming absorbs the cut into sceneMap.
+        context: { characterArcs, sceneMap },
+        // `isFinal` gates the whole-arc verdicts — regression, a circular arc, and
+        // premature closure can only be judged once the WHOLE arc is in view. An
+        // earlier chunk can't know a reverted character grows back, an apparent
+        // circle re-opens, or a "resolved" arc keeps developing — so it would
+        // false-flag. A single-chunk run is its own final part and judges the whole
+        // text.
+        buildVars: (manuscript, meta, c) => ({
+          manuscript,
+          characterArcs: c.characterArcs,
+          sceneMap: c.sceneMap,
+          finalPart: meta?.isFinal ? 'true' : '',
+        }),
+        // Each character's progress accrues across the whole manuscript — the
+        // findings digest keeps prior findings in view so a non-final chunk doesn't
+        // pre-flag, and the clean-setup digest rolls forward each character's
+        // start-state, peak growth, and latest state so the final chunk can detect a
+        // revert, a closed circle, or an arc that resolved early and went flat.
+        crossChunkDigest: true,
+        crossChunkSetup: true,
+        // #1667: this check's verdict is gated to the final part AND anchored on the
+        // carried per-character progress digest — without it the final call would
+        // judge only the last chunk plus a summary and could not tell whether a
+        // character's growth peaked then reverted earlier. So the digest must reach
+        // the final chunk even when it's packed to the window — reserve room by
+        // trimming the final chunk's manuscript tail rather than silently dropping it
+        // (mirrors arc.climax-agency / pacing.escalation-curve).
+        //
+        // Tradeoff (the reserve only bites when the manuscript spans many chunks AND
+        // the final chunk is packed to within the digest's size of the window — a
+        // single-chunk run, the common provider-fits-the-book case, has no digest and
+        // keeps the whole ending): trimming the final chunk's tail can clip the very
+        // end-state this check reads for a circular arc or a late regression. Reserve
+        // is still the right call because the START state and any EARLY resolution —
+        // the anchors a circular-arc / premature-closure verdict cannot be made
+        // without — live ONLY in the digest, while the ending is still mostly covered
+        // by the final chunk's HEAD plus the carried "latest state" the setupFocus
+        // rolls forward. Dropping the digest would keep the last few hundred chars of
+        // ending but lose the beginning, which is the worse failure for an arc-SHAPE
+        // judgment. The setupFocus below carries each character's start/peak/latest so
+        // the lag is one chunk, not the whole history.
+        reserveSetupDigest: true,
+        setupFocus: 'For each named character who carries an arc, track their progress so far as a '
+          + 'short trajectory: their START state, the PEAK of their growth (the most-changed point '
+          + 'reached and which issue it landed in), and their LATEST state. Note when a character '
+          + 'who had grown reverts toward their old self (a possible regression — record whether the '
+          + 'revert is dramatized/earned or unmotivated), and when a character\'s arc appears fully '
+          + 'RESOLVED (their want/need settled) and which issue it resolved in, so a later part can '
+          + 'tell a genuinely premature closure (resolved early then flat) or a circular arc (ended '
+          + 'where it began) from an arc whose further development simply has not arrived yet.',
       });
     },
   },

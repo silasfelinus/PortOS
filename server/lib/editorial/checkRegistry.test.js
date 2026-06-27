@@ -2996,6 +2996,98 @@ describe('arc.transitions — LLM check (#1293)', () => {
   });
 });
 
+describe('arc.regression — LLM check (#1619)', () => {
+  const REG = 'arc.regression';
+  const baseCtx = (overrides = {}) => ({
+    manuscript: '# Issue 1\n\nMara vowed to change, and for a while she did.',
+    series: { characterArcs: [] },
+    reverseOutline: [],
+    config: { maxFindings: 12 },
+    severityDefault: 'medium',
+    planManuscriptChunks: async () => [overrides.manuscript ?? '# Issue 1\n\nMara vowed to change.'],
+    callStagedLLM: async () => ({ content: { findings: [] } }),
+    ...overrides,
+  });
+
+  it('is registered as a series-scoped arc LLM check reading manuscript + outline + characterArcs', () => {
+    const check = getCheck(REG);
+    expect(check.kind).toBe('llm');
+    expect(check.scope).toBe('series');
+    expect(check.category).toBe('arc');
+    expect(check.sources).toEqual(['manuscript', 'reverseOutline', 'series.characterArcs']);
+    expect(check.needsManuscript).toBe(true);
+  });
+
+  it('only runs when there is drafted prose to scan', () => {
+    const check = getCheck(REG);
+    expect(check.gate({ manuscript: '   ' })).toBe(false);
+    expect(check.gate({ manuscript: '# Issue 1\n\nprose' })).toBeTruthy();
+  });
+
+  it('emits arc-category findings and ships the manuscript + both context blocks', async () => {
+    const ctx = baseCtx({
+      callStagedLLM: async (_stage, vars) => {
+        expect(vars).toHaveProperty('manuscript');
+        expect(vars).toHaveProperty('sceneMap');
+        expect(vars).toHaveProperty('characterArcs');
+        return { content: { findings: [{ severity: 'high', issueNumber: 3, location: 'Mara — premature closure', problem: 'Her arc resolves in issue 3 then goes flat' }] } };
+      },
+    });
+    const findings = await getCheck(REG).run(ctx);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].category).toBe('arc');
+    expect(findings[0].location).toBe('Mara — premature closure');
+  });
+
+  it('renders the authored character arcs into the prompt vars', async () => {
+    let capturedArcs = null;
+    const ctx = baseCtx({
+      series: {
+        characterArcs: [
+          { characterName: 'Mara', want: 'revenge', transitions: [{ kind: 'sacrifice', label: 'spares the killer', atIssue: 6 }] },
+        ],
+      },
+      callStagedLLM: async (_stage, vars) => { capturedArcs = vars.characterArcs; return { content: { findings: [] } }; },
+    });
+    await getCheck(REG).run(ctx);
+    expect(capturedArcs).toContain('- Mara');
+    expect(capturedArcs).toContain('wants: revenge');
+  });
+
+  it('degrades gracefully when no authored arcs or outline exist', async () => {
+    const ctx = baseCtx({
+      series: {},
+      reverseOutline: undefined,
+      callStagedLLM: async (_stage, vars) => {
+        expect(vars.characterArcs).toBe('');
+        expect(vars.sceneMap).toBe('');
+        return { content: { findings: [] } };
+      },
+    });
+    const findings = await getCheck(REG).run(ctx);
+    expect(findings).toEqual([]);
+  });
+
+  it('marks a single-chunk run as the final part so whole-arc verdicts are enabled', async () => {
+    let seenVars = null;
+    const ctx = baseCtx({
+      callStagedLLM: async (_stage, vars) => { seenVars = vars; return { content: { findings: [] } }; },
+    });
+    await getCheck(REG).run(ctx);
+    expect(seenVars.finalPart).toBe('true');
+  });
+
+  it('flags only the LAST part as final across a chunked manuscript', async () => {
+    const finals = [];
+    const ctx = baseCtx({
+      planManuscriptChunks: async () => ['# Issue 1\n\np1', '# Issue 2\n\np2', '# Issue 3\n\np3'],
+      callStagedLLM: async (_stage, vars) => { finals.push(vars.finalPart); return { content: { findings: [] } }; },
+    });
+    await getCheck(REG).run(ctx);
+    expect(finals).toEqual(['', '', 'true']);
+  });
+});
+
 describe('relationships.reciprocity — deterministic check', () => {
   const run = (characters) =>
     getCheck('relationships.reciprocity').run({ canon: { characters }, config: {}, severityDefault: 'low' });
