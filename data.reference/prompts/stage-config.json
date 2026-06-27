@@ -750,6 +750,13 @@
       "model": "default",
       "returnsJson": true,
       "variables": []
+    },
+    "pipeline-editorial-arc-regression": {
+      "name": "Pipeline — Editorial Check: Character-arc regression / premature closure",
+      "description": "Editorial check (#1619): judges the SHAPE of each character's arc across the whole series and flags an unmotivated regression (growth then a purposeless revert, distinct from a dramatized relapse), a circular arc (ends where it began), or premature closure (the arc resolves early then goes flat for the rest of the series). Reads the stitched manuscript plus the reverse-outline scene map and the authored per-character arcs (series.characterArcs); degrades to a whole-manuscript scan when no outline or authored arcs exist. Whole-arc verdicts are gated to the final manuscript part. Returns character-anchored findings.",
+      "model": "default",
+      "returnsJson": true,
+      "variables": []
     }
   }
 }
