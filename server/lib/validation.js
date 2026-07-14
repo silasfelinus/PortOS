@@ -907,10 +907,11 @@ export const citySnapshotsQuerySchema = z.object({
 });
 
 // Per-feature AI provider assignment: which configured CLI provider/model a
-// feature runs through (e.g. `settings.autofixer`, `settings.calendarSync`).
-// Empty string (UI "unset" sentinel) is coerced to undefined so it round-trips
-// as "use the default" rather than a bogus id. Both the autofixer (file edits
-// + pm2) and Google Calendar MCP sync require an agentic CLI provider; the
+// feature runs through (e.g. `settings.autofixer`, `settings.calendarSync`,
+// `settings.challengeSubmit`). Empty string (UI "unset" sentinel) is coerced
+// to undefined so it round-trips as "use the default" rather than a bogus id.
+// The autofixer (file edits + pm2), Google Calendar MCP sync, and
+// scripts/challenge_submit.py all require an agentic CLI provider; the
 // picker resolution layer (`pickCliProvider`) enforces type 'cli'.
 // `emptyToUndefined` now lives in zodCompat.js (so per-domain schema files can
 // use it without a cycle through this module) — re-exported for deep imports.

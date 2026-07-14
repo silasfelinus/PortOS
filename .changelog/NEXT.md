@@ -1,5 +1,9 @@
 # Unreleased
 
+## Challenge Center
+
+- **PortOS can now enter Kind Robots' Challenge Center on its own.** `scripts/challenge_submit.py <slug>` fetches a challenge's prompt from the Kind Robots API, runs it through whichever CLI provider you've configured (a new `settings.challengeSubmit` provider/model slot, same pattern as the autofixer and Google Calendar sync — override per-run with `--provider-id`/`--model`), and posts the agent's output back as a submission from contender `portos-agent`, printing the resulting leaderboard standing. `--prompt-only` and `--output FILE` cover manual/inspect flows without running an agent. Agent invocation goes through a new dependency-light helper, `scripts/lib/run_cli_provider.mjs`, which wraps the existing one-shot `runCliProviderPrompt`/`pickCliProvider` (`server/lib/cliProviderRun.js`) so the script doesn't hardcode a CLI's argv convention. (`scripts/challenge_submit.py`, `scripts/lib/run_cli_provider.mjs`, `server/routes/settings.js`, `server/lib/validation.js`)
+
 ## Local model stack
 
 - **[issue-1329] Pinned a validated mlx/mlx-metal trio for LoRA training so the GPU-watchdog stack can't silently drift back to the known-bad build.** The three M5 Max kernel panics during FLUX.2 LoRA training all happened on mlx/mlx-metal 0.30.6, but `setup-image-video.sh` installed `mflux>=0.17` as a *floor* and let pip resolve mlx under mflux's `mlx<0.32` cap — so a reinstall could land back on a panicking build. The setup script now pins the bisect-validated trio **mflux 0.17.5 · mlx 0.31.2 · mlx-metal 0.31.2**, proven by run `d36562a0` completing a full LoRA training to adapter extraction (flux2-klein-4b, bf16, 768px, segmentation on) on the panicking M5 Max with no panic or reboot. The runtime-fingerprint half shipped earlier (#1406). (`scripts/setup-image-video.sh`, `docs/research/2026-06-13-mflux-training-watchdog-panic.md`)
