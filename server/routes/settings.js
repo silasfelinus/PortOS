@@ -78,6 +78,9 @@ router.put('/', asyncHandler(async (req, res) => {
   if (req.body?.calendarSync !== undefined) {
     validateRequest(featureProviderConfigSchema.partial(), req.body.calendarSync);
   }
+  if (req.body?.challengeSubmit !== undefined) {
+    validateRequest(featureProviderConfigSchema.partial(), req.body.challengeSubmit);
+  }
   if (req.body?.codeReview !== undefined) {
     validateRequest(codeReviewSettingsSchema.partial(), req.body.codeReview);
   }
