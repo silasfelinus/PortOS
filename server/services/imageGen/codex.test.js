@@ -456,9 +456,13 @@ describe('codex provider — image harvest', () => {
   // Skip on Windows: POSIX read-only chmod doesn't reliably block writes
   // there, and ESM `vi.spyOn(fs/promises, 'copyFile')` errors with
   // "Cannot redefine property: copyFile" because module namespaces aren't
-  // configurable in ESM. macOS/Linux are the platforms PortOS actually
-  // runs on; this regression-locks the fix where it matters.
-  const itPosix = process.platform === 'win32' ? it.skip : it;
+  // configurable in ESM. Also skip as root: DAC permission checks (including
+  // the chmod 0o555 this test relies on) are bypassed for uid 0, so the
+  // simulated copyFile failure never happens — this hits any root-based
+  // container/CI runner, not just an edge case. macOS/Linux as a non-root
+  // user are the platforms this regression-locks the fix for.
+  const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+  const itPosix = process.platform === 'win32' || isRoot ? it.skip : it;
   itPosix('routes async errors in the close handler through finalizeError (no unhandled rejections)', async () => {
     const sessionId = '11111111-1111-4111-8111-111111111111';
     const codexDir = join(TEST_HOME, '.codex', 'generated_images', sessionId);

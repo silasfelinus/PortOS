@@ -1,5 +1,9 @@
 # Unreleased
 
+## Internal
+
+- **Fixed a false test failure under root-based test runners.** `codex.test.js`'s "routes async errors in the close handler through finalizeError" test simulated a `copyFile` failure via `chmod 0o555` on the destination directory — but POSIX DAC permission checks are bypassed for `uid 0`, so the simulated failure (and the `failed` event it asserts on) never happened when the suite ran as root, e.g. in a root-based container/CI runner. The test's existing Windows skip guard (`itPosix`) now also skips under root, alongside a comment explaining why, keeping the regression-lock intact for the non-root Linux/macOS runs where the simulation actually works. (`server/services/imageGen/codex.test.js`)
+
 ## Challenge Center
 
 - **PortOS can now enter Kind Robots' Challenge Center on its own.** `scripts/challenge_submit.py <slug>` fetches a challenge's prompt from the Kind Robots API, runs it through whichever CLI provider you've configured (a new `settings.challengeSubmit` provider/model slot, same pattern as the autofixer and Google Calendar sync — override per-run with `--provider-id`/`--model`), and posts the agent's output back as a submission from contender `portos-agent`, printing the resulting leaderboard standing. `--prompt-only` and `--output FILE` cover manual/inspect flows without running an agent. Agent invocation goes through a new dependency-light helper, `scripts/lib/run_cli_provider.mjs`, which wraps the existing one-shot `runCliProviderPrompt`/`pickCliProvider` (`server/lib/cliProviderRun.js`) so the script doesn't hardcode a CLI's argv convention. (`scripts/challenge_submit.py`, `scripts/lib/run_cli_provider.mjs`, `server/routes/settings.js`, `server/lib/validation.js`)
